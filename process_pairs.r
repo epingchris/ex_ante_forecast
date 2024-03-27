@@ -295,7 +295,6 @@ SampGMM = function(mclust_obj, n = 1000, onlyPositive = T) {
 }
 
 i = 1
-#sampled_loss_list = mclapply(1:length(proj_list), mc.cores = 30, function(i) {
 loss_distr_list = mclapply(seq_along(proj_list), mc.cores = 30, function(i) {
   a = Sys.time()
   proj = proj_list[[i]]
@@ -305,29 +304,30 @@ loss_distr_list = mclapply(seq_along(proj_list), mc.cores = 30, function(i) {
 
   c_fit = vector("list", length(yrs))
   t_fit = vector("list", length(yrs))
-  sampled_loss = NULL
+  c_samp_loss = vector("list", length(yrs))
+  t_samp_loss = vector("list", length(yrs))
 
   for(j in seq_along(yrs)) {
     yr = yrs[j]
-    c_loss = proj %>% filter(year <= yr) %>% pull(c_loss)
-    t_loss = proj %>% filter(year <= yr) %>% pull(t_loss)
+
+    #fit annual carbon loss values within a ten-year window before the year in question
+    c_loss = proj %>% filter(year <= yr & year > yr - 10) %>% pull(c_loss)
+    t_loss = proj %>% filter(year <= yr & year > yr - 10) %>% pull(t_loss)
 
     if(length(unique(c_loss)) > 1) c_fit[[j]] = mclust::Mclust(c_loss, 2, verbose = F)
     if(length(unique(t_loss)) > 1) t_fit[[j]] = mclust::Mclust(t_loss, 2, verbose = F)
 
-    c_df = data.frame(project = proj_name,
+    c_samp_loss[[j]] = data.frame(project = proj_name,
                       year = yr,
                       val = SampGMM(c_fit[[j]], n = 1000, onlyPositive = F),
                       group = rep("Counterfactual", 1000),
                       started = started[j])
 
-    t_df = data.frame(project = proj_name,
+    t_samp_loss[[j]] = data.frame(project = proj_name,
                       year = yr,
                       val = SampGMM(t_fit[[j]], n = 1000, onlyPositive = F),
                       group = rep("Project", 1000),
                       started = started[j])
-
-    sampled_loss = rbind(sampled_loss, c_df, t_df)
   }
 
   names(c_fit) = yrs
@@ -336,16 +336,20 @@ loss_distr_list = mclapply(seq_along(proj_list), mc.cores = 30, function(i) {
   b = Sys.time()
   cat("Finished", i, ":", proj_name, "\n")
   cat(b - a, "\n")
-  return(list(c_fit = c_fit, t_fit = t_fit, sample = sampled_loss))
+  return(list(c_fit = c_fit, t_fit = t_fit, c_samp_loss = c_samp_loss, t_samp_loss = t_samp_loss))
 })
 
 c_fit_list = lapply(loss_distr_list, function(x) x$c_fit)
 t_fit_list = lapply(loss_distr_list, function(x) x$t_fit)
-sampled_loss_list = lapply(loss_distr_list, function(x) x$sample)
 names(c_fit_list) = proj_id_list
 names(t_fit_list) = proj_id_list
-names(sampled_loss_list) = proj_id_list
+
+c_samp_loss_list = lapply(loss_distr_list, function(x) x$c_samp_loss)
+t_samp_loss_list = lapply(loss_distr_list, function(x) x$t_samp_loss)
+c_samp_loss = do.call(rbind, c_samp_loss_list)
+t_samp_loss = do.call(rbind, t_samp_loss_list)
 
 saveRDS(c_fit_list, file.path('/maps/epr26/tmf_pipe_out/c_fit.RDS'))
 saveRDS(t_fit_list, file.path('/maps/epr26/tmf_pipe_out/t_fit.RDS'))
-saveRDS(sampled_loss_list, file.path('/maps/epr26/tmf_pipe_out/sampled_loss.RDS'))
+saveRDS(c_samp_loss, file.path('/maps/epr26/tmf_pipe_out/c_samp_loss.RDS'))
+saveRDS(t_samp_loss, file.path('/maps/epr26/tmf_pipe_out/t_samp_loss.RDS'))
