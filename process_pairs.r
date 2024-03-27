@@ -275,6 +275,7 @@ cat("all pairs done\n")
 
 saveRDS(proj_list, file.path('/maps/epr26/tmf_pipe_out/project_summaries.RDS'))
 proj_list = readRDS('/maps/epr26/tmf_pipe_out/project_summaries.RDS')
+proj_id_list = names(proj_list)
 
 SampGMM = function(mclust_obj, n = 1000, onlyPositive = T) {
   if(is.null(mclust_obj)) return(NA)
@@ -294,62 +295,34 @@ SampGMM = function(mclust_obj, n = 1000, onlyPositive = T) {
   return(samp_vec)
 }
 
+#fit additionality distribution in the periods before and after project start
+fit_before = vector("list", length(proj_list))
+fit_after = vector("list", length(proj_list))
+
 i = 1
-loss_distr_list = mclapply(seq_along(proj_list), mc.cores = 30, function(i) {
+drawdown_distr_list = mclapply(seq_along(proj_list), mc.cores = 30, function(i) {
   a = Sys.time()
   proj = proj_list[[i]]
   proj_name = names(proj_list[i])
   yrs = unique(proj$year)
   started = subset(proj, pair == 1)$started
 
-  c_fit = vector("list", length(yrs))
-  t_fit = vector("list", length(yrs))
-  c_samp_loss = vector("list", length(yrs))
-  t_samp_loss = vector("list", length(yrs))
+  drawdown_before = subset(proj, started == F)$additionality
+  drawdown_after = subset(proj, started == T)$additionality
 
-  for(j in seq_along(yrs)) {
-    yr = yrs[j]
-
-    #fit annual carbon loss values within a ten-year window before the year in question
-    c_loss = proj %>% filter(year <= yr & year > yr - 10) %>% pull(c_loss)
-    t_loss = proj %>% filter(year <= yr & year > yr - 10) %>% pull(t_loss)
-
-    if(length(unique(c_loss)) > 1) c_fit[[j]] = mclust::Mclust(c_loss, 2, verbose = F)
-    if(length(unique(t_loss)) > 1) t_fit[[j]] = mclust::Mclust(t_loss, 2, verbose = F)
-
-    c_samp_loss[[j]] = data.frame(project = proj_name,
-                      year = yr,
-                      val = SampGMM(c_fit[[j]], n = 1000, onlyPositive = F),
-                      group = rep("Counterfactual", 1000),
-                      started = started[j])
-
-    t_samp_loss[[j]] = data.frame(project = proj_name,
-                      year = yr,
-                      val = SampGMM(t_fit[[j]], n = 1000, onlyPositive = F),
-                      group = rep("Project", 1000),
-                      started = started[j])
-  }
-
-  names(c_fit) = yrs
-  names(t_fit) = yrs
+  if(length(unique(drawdown_before)) > 1) fit_before = mclust::Mclust(drawdown_before, 2, verbose = F)
+  if(length(unique(drawdown_after)) > 1) fit_after = mclust::Mclust(drawdown_after, 2, verbose = F)
 
   b = Sys.time()
   cat("Finished", i, ":", proj_name, "\n")
   cat(b - a, "\n")
-  return(list(c_fit = c_fit, t_fit = t_fit, c_samp_loss = c_samp_loss, t_samp_loss = t_samp_loss))
+  return(list(fit_before = fit_before, fit_after = fit_after))
 })
 
-c_fit_list = lapply(loss_distr_list, function(x) x$c_fit)
-t_fit_list = lapply(loss_distr_list, function(x) x$t_fit)
-names(c_fit_list) = proj_id_list
-names(t_fit_list) = proj_id_list
+fit_before = lapply(drawdown_distr_list, function(x) x$fit_before)
+fit_after = lapply(drawdown_distr_list, function(x) x$fit_after)
+names(fit_before) = proj_id_list
+names(fit_after) = proj_id_list
 
-c_samp_loss_list = lapply(loss_distr_list, function(x) x$c_samp_loss)
-t_samp_loss_list = lapply(loss_distr_list, function(x) x$t_samp_loss)
-c_samp_loss = do.call(rbind, c_samp_loss_list)
-t_samp_loss = do.call(rbind, t_samp_loss_list)
-
-saveRDS(c_fit_list, file.path('/maps/epr26/tmf_pipe_out/c_fit.RDS'))
-saveRDS(t_fit_list, file.path('/maps/epr26/tmf_pipe_out/t_fit.RDS'))
-saveRDS(c_samp_loss, file.path('/maps/epr26/tmf_pipe_out/c_samp_loss.RDS'))
-saveRDS(t_samp_loss, file.path('/maps/epr26/tmf_pipe_out/t_samp_loss.RDS'))
+saveRDS(fit_before, file.path('/maps/epr26/tmf_pipe_out/fit_before.rds'))
+saveRDS(fit_after, file.path('/maps/epr26/tmf_pipe_out/fit_after.rds'))
