@@ -7,7 +7,7 @@ rm(list = ls())
 
 # install.packages(c('arrow','configr', 'tidyverse', 'magrittr', 'sf', 'magrittr', 'MatchIt',
 #                    'rnaturalearthdata', 'configr', 'terra', 'pbapply', 'cleangeo', 'doParallel',
-#                    'foreach', 'readr', 'lwgeom', 'rnaturalearth'), depends = TRUE)
+#                    'foreach', 'readr', 'lwgeom', 'rnaturalearth', 'mclust', 'ggpubr', 'EnvStat'), depends = TRUE)
 
 library(tidyverse)
 library(configr)
@@ -17,7 +17,6 @@ library(arrow)
 library(sf)
 library(MatchIt)
 library(rnaturalearthdata)
-library(configr)
 library(terra)
 library(pbapply)
 library(cleangeo)
@@ -27,11 +26,12 @@ library(readr)
 library(lwgeom)
 library(countrycode)
 library(mclust)
+library(ggpubr)
 
-setwd("/home/tws36/4c_evaluations")
+in_path = '/home/tws36/4c_evaluations/'
 
 # The list of projects to be run in this evaluation:
-proj_meta <- read.csv('./data/project_metadata/proj_meta.csv')
+proj_meta <- read.csv(paste0(in_path, 'data/project_metadata/proj_meta.csv'))
 #proj_to_eval <- read.table('./data/project_metadata/proj_to_eval.txt') %>% unlist() %>% as.numeric()
 #projects_agb <- read_csv('./data/GEDI/project_agb.csv')
 
@@ -81,12 +81,12 @@ tmfemi_reformat <- function(df, t0) {
   return(df)
 }
 
-config <- read.config('./config/fixed_config_sherwood.ini')
+config <- read.config(paste0(in_path, 'config/fixed_config_sherwood.ini'))
 config$USERPARAMS$data_path <- '/maps/pf341/tom'
 #write.config(config, './config/fixed_config_tmp.ini') #error: permission denied
 
 # Load user-defined functions that Tom wrote
-sapply(list.files('./R', full.names = TRUE, pattern = '.R$'), source)
+sapply(list.files(paste0(in_path, 'R'), full.names = TRUE, pattern = '.R$'), source)
 
 # Remove dplyr summarise grouping message because it prints a lot
 options(dplyr.summarise.inform = FALSE)
@@ -94,7 +94,7 @@ options(dplyr.summarise.inform = FALSE)
 # theme_set(theme_minimal())
 # theme_replace(panel.grid.minor = element_line(colour = "red"))
 
-source('./R/scripts/setup_and_reusable/load_config.R')
+source(paste0(in_path, 'R/scripts/setup_and_reusable/load_config.R'))
 # source('./R/scripts/0.2_load_project_details.R')
 
 # match_years<-c(0, -5, -10)
@@ -150,10 +150,11 @@ project_paths <- list.files(pair_dir, full = TRUE) %>%
   as.vector()
 
 
-i <- 1 #used to test just one project
+# Obtain annual carbon loss and additionality values ----
+#i <- 1 #used to test just one project
 #proj_list <- lapply(1:10, function(i) { #used to loop just ten projects
+#proj_list <- lapply(seq_along(project_paths), function(i) { #used on Windows
 proj_list <- mclapply(seq_along(project_paths), mc.cores = 30, function(i) {
-  a = Sys.time()
   myproject_path <- project_paths[i]
   proj_id <- basename(myproject_path) %>% str_replace('_pairs', '')
 
@@ -262,67 +263,12 @@ proj_list <- mclapply(seq_along(project_paths), mc.cores = 30, function(i) {
   project_estimates <- do.call(rbind, project_estimates) %>%
     mutate(started = ifelse(year > t0, T, F))
 
-  b = Sys.time()
-  cat("Finished", i, ":", proj_id, "\n")
-  cat(b - a, "\n")
   return(project_estimates)
 })
 
 proj_id_list = basename(project_paths) %>% str_replace('_pairs', '')
 names(proj_list) = proj_id_list
 
-cat("all pairs done\n")
+out_path = paste0('/maps/epr26/tmf_pipe_out/')
 
-saveRDS(proj_list, file.path('/maps/epr26/tmf_pipe_out/project_summaries.RDS'))
-proj_list = readRDS('/maps/epr26/tmf_pipe_out/project_summaries.RDS')
-proj_id_list = names(proj_list)
-
-SampGMM = function(mclust_obj, n = 1000, onlyPositive = T) {
-  if(is.null(mclust_obj)) return(NA)
-
-  params = mclust_obj$param
-  if(length(params$variance$sigmasq) == 1) params$variance$sigmasq[2] = params$variance$sigmasq[1]
-  samp_vec = NULL
-  while(length(samp_vec) < n) {
-    distr_chosen = ifelse(runif(1) <= params$pro[1], 1, 2)
-    val = rnorm(1, mean = params$mean[distr_chosen], sd = sqrt(params$variance$sigmasq[distr_chosen]))
-    if(onlyPositive) {
-      if(val > 0) samp_vec = c(samp_vec, val)
-    } else {
-      samp_vec = c(samp_vec, val)
-    }
-  }
-  return(samp_vec)
-}
-
-#fit additionality distribution in the periods before and after project start
-fit_before = vector("list", length(proj_list))
-fit_after = vector("list", length(proj_list))
-
-i = 1
-drawdown_distr_list = mclapply(seq_along(proj_list), mc.cores = 30, function(i) {
-  a = Sys.time()
-  proj = proj_list[[i]]
-  proj_name = names(proj_list[i])
-  yrs = unique(proj$year)
-  started = subset(proj, pair == 1)$started
-
-  drawdown_before = subset(proj, started == F)$additionality
-  drawdown_after = subset(proj, started == T)$additionality
-
-  if(length(unique(drawdown_before)) > 1) fit_before = mclust::Mclust(drawdown_before, 2, verbose = F)
-  if(length(unique(drawdown_after)) > 1) fit_after = mclust::Mclust(drawdown_after, 2, verbose = F)
-
-  b = Sys.time()
-  cat("Finished", i, ":", proj_name, "\n")
-  cat(b - a, "\n")
-  return(list(fit_before = fit_before, fit_after = fit_after))
-})
-
-fit_before = lapply(drawdown_distr_list, function(x) x$fit_before)
-fit_after = lapply(drawdown_distr_list, function(x) x$fit_after)
-names(fit_before) = proj_id_list
-names(fit_after) = proj_id_list
-
-saveRDS(fit_before, file.path('/maps/epr26/tmf_pipe_out/fit_before.rds'))
-saveRDS(fit_after, file.path('/maps/epr26/tmf_pipe_out/fit_after.rds'))
+saveRDS(proj_list, file.path(paste0(out_path, 'project_summaries.rds')))
