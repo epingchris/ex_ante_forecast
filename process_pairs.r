@@ -184,6 +184,7 @@ proj_list <- mclapply(seq_along(project_paths), mc.cores = 30, function(i) {
   # Extract ACD per LUC:
   acd = read.csv(paste0(acd_dir, proj_id, '-carbon-density.csv'))
   acd_u = acd %>% filter(land.use.class == 1) %>% pull(carbon.density)
+  if(length(acd_u) == 0) acd_u = NA
 
   # Project-level independent variables: area, ACD of undisturbed forest, country, ecoregion
   project_var = data.frame(acd_u = acd_u,
@@ -295,17 +296,17 @@ proj_list <- mclapply(seq_along(project_paths), mc.cores = 30, function(i) {
     do.call(rbind, .) %>%
     mutate(started = ifelse(year > t0, T, F))
 
-
   b = Sys.time()
   cat(b - a, "\n")
   return(list(project_estimates = project_estimates, project_var = project_var_all))
 })
 
 project_var_df = lapply(proj_list, function(x) x$project_var) %>% do.call(rbind, .)
-project_estimates_list = lapply(proj_list, function(x) x$project_estimates)
 
-names(proj_list) = proj_id_list
+project_estimates_list = lapply(proj_list, function(x) x$project_estimates)
+names(project_estimates_list) = proj_id_list
 
 out_path = paste0('/maps/epr26/tmf_pipe_out/')
 
+saveRDS(project_var_df, file.path(paste0(out_path, 'project_var.rds')))
 saveRDS(project_estimates_list, file.path(paste0(out_path, 'project_estimates.rds')))
