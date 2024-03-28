@@ -42,7 +42,7 @@ fit_type = "normal" #GMM, normal
 #drawdown_distr_list = lapply(seq_along(proj_list), function(i) { #used on Windows
 drawdown_distr_list = mclapply(seq_along(proj_list), mc.cores = 30, function(i) {
   proj = proj_list[[i]]
-  proj_name = names(proj_list[i])
+  proj_name = proj_id_list[i]
 
   #obtain observed drawdown values
   drawdown_before = subset(proj, started == F)$additionality
@@ -111,22 +111,29 @@ drawdown_distr_list = mclapply(seq_along(proj_list), mc.cores = 30, function(i) 
 
 fit_before_list = lapply(drawdown_distr_list, function(x) x$fit_before) %>% `names<-`(proj_id_list)
 fit_after_list = lapply(drawdown_distr_list, function(x) x$fit_after) %>% `names<-`(proj_id_list)
-gof_df = lapply(drawdown_distr_list, function(x) x$gof_df) %>% do.call(rbind, .)
-drawdown_df = lapply(drawdown_distr_list, function(x) x$drawdown_summ) %>% do.call(rbind, .)
-plot_fit_list = lapply(drawdown_distr_list, function(x) x$plot_fit) %>% `names<-`(proj_id_list)
-
 saveRDS(fit_before_list, file.path(paste0(path, fit_type, '/drawdown_fit_before.rds')))
 saveRDS(fit_after_list, file.path(paste0(path, fit_type, '/drawdown_fit_after.rds')))
-saveRDS(gof_df, file.path(paste0(path, fit_type, '/drawdown_gof.rds')))
-saveRDS(drawdown_df, file.path(paste0(path, fit_type, '/drawdown_val.rds')))
 
 if(fit_type == "normal") {
-  fit_before_param = lapply(fit_before_list, function(x) x$estimate) %>% do.call(rbind, .)
-  fit_after_param = lapply(fit_after_list, function(x) x$estimate) %>% do.call(rbind, .)
+  fit_before_param = lapply(fit_before_list, function(x) x$estimate) %>%
+    do.call(rbind, .) %>%
+    as.data.frame() %>%
+    mutate(project = rownames(.))
+  fit_after_param = lapply(fit_after_list, function(x) x$estimate) %>%
+    do.call(rbind, .) %>%
+    as.data.frame() %>%
+    mutate(project = rownames(.))
 
   saveRDS(fit_before_param, file.path(paste0(path, fit_type, '/drawdown_fit_before_param.rds')))
   saveRDS(fit_after_param, file.path(paste0(path, fit_type, '/drawdown_fit_after_param.rds')))
 }
 
+gof_df = lapply(drawdown_distr_list, function(x) x$gof_df) %>% do.call(rbind, .)
+drawdown_df = lapply(drawdown_distr_list, function(x) x$drawdown_summ) %>% do.call(rbind, .)
+saveRDS(gof_df, file.path(paste0(path, fit_type, '/drawdown_gof.rds')))
+saveRDS(drawdown_df, file.path(paste0(path, fit_type, '/drawdown_val.rds')))
+
+
+plot_fit_list = lapply(drawdown_distr_list, function(x) x$plot_fit) %>% `names<-`(proj_id_list)
 ggpubr::ggarrange(plotlist = plot_fit_list, ncol = 3, nrow = 3, common.legend = T, legend = "right") %>%
   ggpubr::ggexport(filename = paste0(path, fit_type, '/plot_drawdown_fit.pdf'), width = 18, height = 8.5, units = "in")
