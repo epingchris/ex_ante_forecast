@@ -215,6 +215,8 @@ proj_list <- mclapply(seq_along(project_paths), mc.cores = 30, function(i) {
       mutate(treatment = 'treatment') %>%
       tmfemi_reformat(t0 = t0)
 
+    # Pair-level independent variables: median of all pixels in each pair (control + treat), then min/median/max across 100 pairs
+    # elevation, slope, accessibility, cpc0/5/10_u, cpc0/5/10_d
     pair_var = rbind(control, treat) %>%
       dplyr::select(elevation:cpc10_d) %>%
       reframe(elevation = median(elevation),
@@ -228,6 +230,13 @@ proj_list <- mclapply(seq_along(project_paths), mc.cores = 30, function(i) {
               cpc10_d = median(cpc10_d)) %>%
       pivot_longer(cols = elevation:cpc10_d, names_to = "var", values_to = "val") %>%
       mutate(pair = j)
+
+    if("biome" %in% colnames(control) & "biome" %in% colnames(treat)) {
+      biome_df = rbind(control, treat) %>%
+        pull(biome) %>%
+        table() %>%
+        as.data.frame()
+    }
 
     exp_n_pairs <- nrow(treat) + nrow(unmatched_pairs)
 
@@ -276,10 +285,13 @@ proj_list <- mclapply(seq_along(project_paths), mc.cores = 30, function(i) {
     #  avoided_disturbance_ha = undisturbed_additionality,
     #  avoided_disturbance_ha_yr = undisturbed_additionality / (eval_end - t0)
     #)
-    return(list(pair_var = pair_var, out_df = out_df))
+    return(list(pair_var = pair_var, out_df = out_df, biome_df = biome_df))
   })
 
   pair_var_df = lapply(project_estimates, function(x) x$pair_var) %>% do.call(rbind, .)
+
+  #still need to process this to get project-level variable values
+  biome_df_list = lapply(project_estimates, function(x) x$biome_df)
 
   pair_var_summary = pair_var_df %>%
     group_by(var) %>%

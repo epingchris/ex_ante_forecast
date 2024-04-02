@@ -114,6 +114,8 @@ fit_after_list = lapply(drawdown_distr_list, function(x) x$fit_after) %>% `names
 saveRDS(fit_before_list, file.path(paste0(path, fit_type, '/drawdown_fit_before.rds')))
 saveRDS(fit_after_list, file.path(paste0(path, fit_type, '/drawdown_fit_after.rds')))
 
+#project-level parameters:
+#mean and sd of normal distribution used to fit additionality before/after project start
 if(fit_type == "normal") {
   fit_before_param = lapply(fit_before_list, function(x) x$estimate) %>%
     do.call(rbind, .) %>%
