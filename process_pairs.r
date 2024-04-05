@@ -216,7 +216,7 @@ proj_list <- mclapply(seq_along(project_paths), mc.cores = 30, function(i) {
       tmfemi_reformat(t0 = t0)
 
     # Pair-level independent variables: median of all pixels in each pair (control + treat), then min/median/max across 100 pairs
-    # elevation, slope, accessibility, cpc0/5/10_u, cpc0/5/10_d
+    # elevation, slope, accessibility, cpc0/5/10_u, cpc0/5/10_d, #cpc5_u - cpc0_u, cpc10_u - cpc5_u, cpc10_u - cpc0_u
     pair_var = rbind(control, treat) %>%
       dplyr::select(elevation:cpc10_d) %>%
       reframe(elevation = median(elevation),

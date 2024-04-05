@@ -139,29 +139,32 @@ fit_param = lapply(seq_along(drawdown_distr_list), function(i) {
   x_before = drawdown_distr_list[[i]]$samp_before
   x_after = drawdown_distr_list[[i]]$samp_after
 
-  val_before = lapply(seq_along(x_before), function(i) {
+  df_before = lapply(seq_along(x_before), function(i) {
     x = x_before[[i]]
     nom = names(x_before[i])
     df = data.frame(mean(x), median(x), sd(x))
-    colnames(df) = paste0("before.", nom, ".", c("mean", "median", "sd"))
+    colnames(df) = paste0(nom, ".", c("mean", "median", "sd"))
     return(df)
   }) %>%
-    do.call(cbind, .)
+    do.call(cbind, .) %>%
+    mutate(project = proj_name)
 
-  val_after = lapply(seq_along(x_after), function(i) {
+  df_after = lapply(seq_along(x_after), function(i) {
     x = x_after[[i]]
     nom = names(x_after[i])
     df = data.frame(mean(x), median(x), sd(x))
-    colnames(df) = paste0("after.", nom, ".", c("mean", "median", "sd"))
+    colnames(df) = paste0(nom, ".", c("mean", "median", "sd"))
     return(df)
   }) %>%
-    do.call(cbind, .)
+    do.call(cbind, .) %>%
+    mutate(project = proj_name)
 
-  df = cbind(val_before, val_after) %>% mutate(proj = proj_name)
-  return(df)
-}) %>%
-  do.call(rbind, .)
-saveRDS(fit_param, file.path(paste0(path, "fit_param.rds")))
+  return(list(before = df_before, after = df_after))
+})
+
+fit_param_before = lapply(fit_param, function(x) x$before) %>% do.call(rbind, .)
+fit_param_after = lapply(fit_param, function(x) x$after) %>% do.call(rbind, .)
+saveRDS(list(before = fit_param_before, after = fit_param_after), file.path(paste0(path, "fit_param.rds")))
 
 if(plot_drawdown) {
   drawdown_df = lapply(drawdown_distr_list, function(x) x$drawdown_summ) %>% do.call(rbind, .)
