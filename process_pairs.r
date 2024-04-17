@@ -27,10 +27,13 @@ library(lwgeom)
 library(countrycode)
 library(stars)
 
-setwd('/home/tws36/4c_evaluations/')
+source("functions.r") #cpc_rename, tmfemi_reformat
+
+orig_dir = getwd()
+setwd("/home/tws36/4c_evaluations")
 
 # The list of projects to be run in this evaluation:
-proj_meta <- read.csv('./data/project_metadata/proj_meta.csv')
+proj_meta <- read.csv("./data/project_metadata/proj_meta.csv")
 #proj_to_eval <- read.table('./data/project_metadata/proj_to_eval.txt') %>% unlist() %>% as.numeric()
 #projects_agb <- read_csv('./data/GEDI/project_agb.csv')
 
@@ -39,53 +42,12 @@ proj_meta <- read.csv('./data/project_metadata/proj_meta.csv')
 # proj_id <- 1201
 # site <- 'Gola'
 
-cpc_rename <- function(x, t0) {
-  x %<>%
-    as.data.frame() %>%
-    dplyr::select(starts_with('cpc'))
-  mycolnames <- colnames(x)
-  years <- mycolnames %>%
-    stringr::str_extract('[:digit:]+') %>% as.numeric()
-  suffix <- mycolnames %>%
-    stringr::str_extract('_u|_d') %>%
-    stringr::str_replace('u', '1') %>%
-    stringr::str_replace('d', '3')
-  newnames <- paste0('JRC', t0-years, suffix)
-  colnames(x) <- newnames
-  return(x)
-}
-
-tmfemi_reformat <- function(df, t0) {
-  df %<>%
-    st_as_sf(coords = c("lng", "lat")) %>%
-    dplyr::rename(accessibility = access) %>%
-    dplyr::rename_with(~ gsub("luc_", "JRC", .x, fixed = TRUE))
-
-  other <- df %>% dplyr::select(-starts_with('cpc'))
-
-  cpcs <- df %>%
-    dplyr::select(starts_with('cpc')) %>%
-    cpc_rename(t0 = t0)
-
-  df <- cbind(df, cpcs)
-  # JRC2002_1 = cpc10_u,
-  # JRC2007_1 = cpc5_u,
-  # JRC2012_1 = cpc0_u,
-  # JRC2002_3 = cpc10_d,
-  # JRC2007_3 = cpc5_d,
-  # JRC2012_3 = cpc0_d) %>%
-
-  if(any(colnames(df) %>% stringr::str_detect('ecoregion')))
-    df %<>% dplyr::rename(biome = ecoregion)
-  return(df)
-}
-
-config <- read.config('./config/fixed_config_sherwood.ini')
+config <- read.config("./config/fixed_config_sherwood.ini")
 config$USERPARAMS$data_path <- '/maps/pf341/tom'
 #write.config(config, './config/fixed_config_tmp.ini') #error: permission denied
 
 # Load user-defined functions that Tom wrote
-sapply(list.files('./R', full.names = TRUE, pattern = '.R$'), source)
+sapply(list.files("./R", full.names = TRUE, pattern = '.R$'), source)
 
 # Remove dplyr summarise grouping message because it prints a lot
 options(dplyr.summarise.inform = FALSE)
@@ -93,8 +55,10 @@ options(dplyr.summarise.inform = FALSE)
 # theme_set(theme_minimal())
 # theme_replace(panel.grid.minor = element_line(colour = "red"))
 
-source('./R/scripts/setup_and_reusable/load_config.R')
+source("./R/scripts/setup_and_reusable/load_config.R")
 # source('./R/scripts/0.2_load_project_details.R')
+
+setwd(orig_dir)
 
 # match_years<-c(0, -5, -10)
 
@@ -216,9 +180,10 @@ proj_list <- mclapply(seq_along(project_paths), mc.cores = 30, function(i) {
       tmfemi_reformat(t0 = t0)
 
     # Pair-level independent variables: median of all pixels in each pair (control + treat), then min/median/max across 100 pairs
-    # elevation, slope, accessibility, cpc0/5/10_u, cpc0/5/10_d, #cpc5_u - cpc0_u, cpc10_u - cpc5_u, cpc10_u - cpc0_u
+    # elevation, slope, accessibility, cpc0/5/10_u, cpc0/5/10_d, defor_5_0 = cpc5_u - cpc0_u, defor_10_5 = cpc10_u - cpc5_u
     pair_var = rbind(control, treat) %>%
       dplyr::select(elevation:cpc10_d) %>%
+      mutate(defor_5_0 = (cpc5_u - cpc0_u) / 5, defor_10_5 = (cpc10_u - cpc5_u) / 2) %>%
       reframe(elevation = median(elevation),
               slope = median(slope),
               accessibility = median(accessibility),
@@ -227,10 +192,13 @@ proj_list <- mclapply(seq_along(project_paths), mc.cores = 30, function(i) {
               cpc5_u = median(cpc5_u),
               cpc5_d = median(cpc5_d),
               cpc10_u = median(cpc10_u),
-              cpc10_d = median(cpc10_d)) %>%
-      pivot_longer(cols = elevation:cpc10_d, names_to = "var", values_to = "val") %>%
+              cpc10_d = median(cpc10_d),
+              defor_5_0 = median(defor_5_0),
+              defor_10_5 = median(defor_10_5)) %>%
+      pivot_longer(cols = elevation:defor_10_5, names_to = "var", values_to = "val") %>%
       mutate(pair = j)
 
+    biome_df = NULL
     if("biome" %in% colnames(control) & "biome" %in% colnames(treat)) {
       biome_df = rbind(control, treat) %>%
         pull(biome) %>%
@@ -290,8 +258,8 @@ proj_list <- mclapply(seq_along(project_paths), mc.cores = 30, function(i) {
 
   pair_var_df = lapply(project_estimates, function(x) x$pair_var) %>% do.call(rbind, .)
 
-  #still need to process this to get project-level variable values
-  biome_df_list = lapply(project_estimates, function(x) x$biome_df)
+  #still need to process this to get project-level biome values
+  #biome_df_list = lapply(project_estimates, function(x) x$biome_df)
 
   pair_var_summary = pair_var_df %>%
     group_by(var) %>%

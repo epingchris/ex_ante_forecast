@@ -1,4 +1,13 @@
-#temporary code: first run process_pairs.r until line 153
+rm(list = ls())
+
+library(tidyverse)
+library(magrittr)
+library(stars)
+library(arrow)
+
+#load functions
+source("./functions.r") #cpc_rename, tmfemi_reformat
+
 
 # The list of projects to be run in this evaluation:
 proj_meta = read.csv("/home/tws36/4c_evaluations/data/project_metadata/proj_meta.csv")
@@ -11,8 +20,10 @@ biome_proj_list = lapply(seq_along(projects), function(i) {
 
   k = read_parquet(paste0("/maps/epr26/tmf_pipe_out/", proj, "/", proj, "k.parquet")) %>%
     dplyr::select(c("lat", "lng", "ecoregion"))
-  matches = read_parquet(paste0("/maps/epr26/tmf_pipe_out/", proj, "/", proj, "matches.parquet")) %>%
-    dplyr::select(c("lat", "lng", "ecoregion"))
+  matches = read_parquet(paste0("/maps/epr26/tmf_pipe_out/", proj, "/", proj, "matches.parquet"))
+
+  #get biome
+  matches_biome = matches %>% dplyr::select(c("lat", "lng", "ecoregion"))
 
   pair_paths = list.files(paste0("/maps/epr26/tmf_pipe_out/", proj, "/pairs"), full = TRUE)
   matchless_ind = pair_paths %>% str_detect("matchless")
@@ -24,7 +35,7 @@ biome_proj_list = lapply(seq_along(projects), function(i) {
     pairs = read_parquet(matched_paths[j]) %>%
       dplyr::left_join(., k, by = join_by(k_lat == lat, k_lng == lng)) %>%
       rename(k_ecoregion = ecoregion) %>%
-      dplyr::left_join(., matches, by = join_by(k_lat == lat, k_lng == lng)) %>%
+      dplyr::left_join(., matches_biome, by = join_by(k_lat == lat, k_lng == lng)) %>%
       rename(s_ecoregion = ecoregion)
 
     control <- pairs %>%
