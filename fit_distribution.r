@@ -14,7 +14,7 @@ library(EnvStats)
 library(MASS)
 
 path = paste0('/maps/epr26/tmf_pipe_out/')
-proj_list = readRDS(paste0(path, 'project_summaries.rds'))
+proj_list = readRDS(paste0(path, 'project_estimates.rds'))
 proj_id_list = names(proj_list)
 
 
@@ -130,7 +130,7 @@ drawdown_distr_list = mclapply(seq_along(proj_list), mc.cores = 30, function(i) 
 })
 
 drawdown_distr_list %<>% `names<-`(proj_id_list)
-saveRDS(drawdown_distr_list, file.path(paste0(path, 'drawdown_distr_list.rds')))
+saveRDS(drawdown_distr_list, file.path(paste0(path, "fit_distribution/drawdown_distr_list.rds")))
 
 #project-level parameters:
 #mean and sd of normal distribution used to fit additionality before/after project start
@@ -164,13 +164,13 @@ fit_param = lapply(seq_along(drawdown_distr_list), function(i) {
 
 fit_param_before = lapply(fit_param, function(x) x$before) %>% do.call(rbind, .)
 fit_param_after = lapply(fit_param, function(x) x$after) %>% do.call(rbind, .)
-saveRDS(list(before = fit_param_before, after = fit_param_after), file.path(paste0(path, "fit_param.rds")))
+saveRDS(list(before = fit_param_before, after = fit_param_after), file.path(paste0(path, "fit_distribution/fit_param.rds")))
 
 if(plot_drawdown) {
   drawdown_df = lapply(drawdown_distr_list, function(x) x$drawdown_summ) %>% do.call(rbind, .)
-  saveRDS(drawdown_df, file.path(paste0(path, fit_type, '/drawdown_val.rds')))
+  saveRDS(drawdown_df, file.path(paste0(path, "fit_distribution/", fit_type, "/drawdown_val.rds")))
 
   plot_fit_list = lapply(drawdown_distr_list, function(x) x$plot_fit) %>% `names<-`(proj_id_list)
   ggpubr::ggarrange(plotlist = plot_fit_list, ncol = 3, nrow = 3, common.legend = T, legend = "right") %>%
-    ggpubr::ggexport(filename = paste0(path, fit_type, '/plot_drawdown_fit.pdf'), width = 18, height = 8.5, units = "in")
+    ggpubr::ggexport(filename = paste0(path, "fit_distribution/", fit_type, '/plot_drawdown_fit.pdf'), width = 18, height = 8.5, units = "in")
 }
