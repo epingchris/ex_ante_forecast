@@ -41,15 +41,18 @@ source("./R/scripts/setup_and_reusable/load_config.R")
 setwd(orig_dir)
 
 #load the list of projects to be run
-proj = "1201"
+proj_id = "1201"
 #grid_n = 13 #use nrow(remerged_grid)
 
 #load metadata
 proj_meta = read.csv("/home/tws36/4c_evaluations/data/project_metadata/proj_meta.csv") #for t0
-t0 = proj_meta %>% filter(ID == proj) %>% pull(t0)
+t0 = proj_meta %>% filter(ID == proj_id) %>% pull(t0)
 
-proj_var = readRDS("/maps/epr26/tmf_pipe_out/project_var.rds") #for area
-area_ha = proj_var %>% filter(project == proj) %>% pull(area_ha)
+area_ha = st_read(paste0("/maps/epr26/tmf-data/projects/", proj_id, ".geojson")) %>%
+  st_make_valid() %>%
+  st_union() %>%
+  st_transform(4326) %>%
+  st_area_ha() #find area in hectares
 
 acd = read.csv(paste0("/maps/epr26/tmf_pipe_out/", proj, "/", proj, "carbon-density.csv")) #for vicinity baseline carbon loss rate (MgC / ha)
 acd_change = ifelse(sum(is.na(acd$carbon.density[c(1, 3)])) == 0, acd$carbon.density[1] - acd$carbon.density[3], NA)

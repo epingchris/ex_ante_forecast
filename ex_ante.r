@@ -45,7 +45,7 @@ t0 = 2011
 projects = c(2, 3, 4, 5, 7)
 proj_area = sapply(seq_along(projects), function(i) {
   a = st_read(paste0("/maps/epr26/tmf-data-grid/0000/0000_", i, ".geojson")) %>%
-    st_area() / 10000
+    st_area_ha()
   return(a)
 })
 

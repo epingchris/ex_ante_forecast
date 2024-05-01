@@ -13,18 +13,19 @@ library(tidyverse)
 library(configr)
 library(magrittr)
 library(readr)
-library(arrow)
 library(sf)
-library(MatchIt)
-library(rnaturalearthdata)
-library(terra)
-library(pbapply)
-library(cleangeo)
-library(doParallel)
-library(foreach)
-library(lwgeom)
-library(countrycode)
 library(stars)
+library(arrow) #arrow::read_parquet
+library(MatchIt) #MatchIt::matchit
+library(parallel) #parallel::mclapply
+# library(rnaturalearthdata)
+# library(terra)
+# library(pbapply)
+# library(cleangeo)
+# library(doParallel)
+# library(foreach)
+# library(lwgeom)
+# library(countrycode)
 
 source("functions.r") #cpc_rename, tmfemi_reformat
 
@@ -46,7 +47,7 @@ config$USERPARAMS$data_path = '/maps/pf341/tom'
 #write.config(config, './config/fixed_config_tmp.ini') #error: permission denied
 
 # Load user-defined functions that Tom wrote
-sapply(list.files("./R", full.names = TRUE, pattern = '.R$'), source)
+sapply(list.files("./R", full = T, pattern = ".R$"), source)
 
 # Remove dplyr summarise grouping message because it prints a lot
 options(dplyr.summarise.inform = FALSE)
@@ -60,96 +61,109 @@ class_prefix = 'JRC'
 match_years = c(0, -5, -10)
 match_classes = c(1, 3)
 
-# Find projects with a non-empty carbon_density.csv
-acd_dir = '/maps/pf341/results/live-pipeline/'
-acd_paths = list.files(acd_dir, full = TRUE) %>%
-  str_subset('carbon-density') %>%
-  sapply(., function(x) ifelse(nrow(read.csv(x)) == 0, NA, x)) %>%
-  na.omit() %>%
-  as.vector()
+# Load the IDs of projects to process ----
+#input: project_dir, exclude_id, acd_id
+#output: projects, pair_dirs, acd_dir
+previous = F
+process_grid = F
+grid_id = "1201"
 
-acd_proj_id = basename(acd_paths) %>%
-  str_replace('-carbon-density', '') %>%
-  str_replace('.csv', '')
+if(previous) {
+  #previous: from /maps/pf341
+  project_dir = "/maps/pf341/results/2024-january-pipeline"
+  projects = list.files(project_dir, full = T) %>%
+    str_subset("pairs") %>%
+    basename() %>%
+    str_replace("_pairs", "")
+  #select those with carbon density data, unselect problematic projects (1566, 1067, 958, 1133) and projects not in TMF extent (562)
+  exclude_id = c("1566", "1067", "958", "1133", "562")
+  #select projects with a non-empty carbon_density.csv
+  acd_dir = "/maps/pf341/results/live-pipeline/"
+  acd_id = list.files(acd_dir, full = T) %>%
+    str_subset('carbon-density') %>%
+    basename() %>%
+    str_replace("-carbon-density.csv", "")
+  projects = projects[which(projects %in% acd_id) & !(projects %in% exclude_id)] %>%
+    as.numeric() %>%
+    sort() %>%
+    as.character()
+  pair_dirs = paste0("/maps/pf341/results/2024-january-pipeline/", projects, "_pairs/")
+} else {
+  #now: from /maps/epr26
+  project_dir = "/maps/epr26/tmf_pipe_out/"
+  projects = list.files(project_dir, full = T) %>%
+    str_subset("\\.", negate = T) %>%
+    str_subset("\\_grid", negate = T) %>%
+    str_subset("fit\\_distribution", negate = T) %>%
+    str_replace("/maps/epr26/tmf_pipe_out//", "")
+  #remove: 0000, 9999 are controls and test; 562 not in TMF; 612 replaced by 612a
+  projects = projects[!(projects %in% c("0000", "9999", "562", "612", "612a"))] %>%
+    as.numeric() %>%
+    sort() %>%
+    as.character()
+#  projects[which(projects == "612")] = "612a"
+  pair_dirs = paste0(project_dir, projects, "/pairs/")
+  acd_dir = paste0(project_dir, projects, "/")
+}
 
-# Find projects with matched pair data
-# Select those with carbon density data, unselect problematic projects (1566, 1067, 958, 1133)
-# 562: not in TMF extent
-exclude_id = c(1566, 1067, 958, 1133, 562)
-pair_dir = '/maps/pf341/results/2024-january-pipeline'
-# '/maps/pf341/tom-add-paper'
-project_paths = list.files(pair_dir, full = TRUE) %>%
-  str_subset('pairs') %>%
-  sapply(., function(x) {
-    proj_id = basename(x) %>% str_replace('_pairs', '')
-    ifelse(proj_id %in% acd_proj_id & proj_id %in% exclude_id == F, x, NA)
-  }) %>%
-  na.omit() %>%
-  as.vector()
-
-
-# Obtain annual carbon loss and additionality values ----
-proj_id_list = basename(project_paths) %>% str_replace('_pairs', '')
-
-#i = 1 #used to test just one project
-#proj_list = lapply(1:10, function(i) { #used to loop just ten projects
-#proj_list = lapply(seq_along(project_paths), function(i) { #used on Windows
-proj_list = mclapply(seq_along(project_paths), mc.cores = 30, function(i) {
+# Loop through all projects ----
+proj_list = mclapply(seq_along(projects), mc.cores = 30, function(i) { #mclapply() does not work on Windows
   a = Sys.time()
-  myproject_path = project_paths[i]
-  proj_id = proj_id_list[i]
+  proj_id = projects[i]
+  pair_dir = pair_dirs[i]
 
-  # Extract project start date:
+  #extract project-level variables
   myproj = proj_meta %>% filter(ID == proj_id)
   t0 = myproj$t0
+  country = myproj$COUNTRY
 
-  site = paste('VCS', proj_id, sep = '_')
-  if(!str_detect(supplier_path, '.shp')) {
-    aoi_path = file.path(supplier_path, site, 'GIS', 'aoi.shp')
-    if(!file.exists(aoi_path)) aoi_path = file.path(supplier_path, site, paste(site, '.shp', sep = ''))
+  #extract the area of the region
+  if(previous) {
+    #previous: from supplier path (NEED TO CONSISTENTLY SET AOI NAME)
+    site = paste("VCS", proj_id, sep = "_")
+    if(!str_detect(supplier_path, ".shp")) {
+      aoi_path = file.path(supplier_path, site, "GIS", "aoi.shp")
+      if(!file.exists(aoi_path)) aoi_path = file.path(supplier_path, site, paste0(site, ".shp"))
+    }
+    aoi_project = read_sf(aoi_path)
+  } else {
+    #now: from geojson
+    aoi_project = st_read(paste0("/maps/epr26/tmf-data/projects/", proj_id, ".geojson"))
   }
-  aoi_project = read_sf(aoi_path) %>% # NEED TO CONSISTENTLY SET AOI NAME
-    st_make_valid() %>%
-    st_union()
+  area_ha = aoi_project %>% st_make_valid() %>% st_union() %>% st_transform(4326) %>% st_area_ha() #find area in hectares
 
-  # Transform the projection:
-  aoi_project = aoi_project %>% st_transform(4326)
-
-  # Find the area of the region:
-  project_area_ha = st_area_ha(aoi_project)
-
-  # Extract ACD per LUC:
-  acd = read.csv(paste0(acd_dir, proj_id, '-carbon-density.csv'))
+  #extract ACD per LUC
+  acd_path = ifelse(length(acd_dir) > 1, acd_dir[i], acd_dir)
+  acd = read.csv(paste0(acd_path, proj_id, "carbon-density.csv"))
   acd_u = acd %>% filter(land.use.class == 1) %>% pull(carbon.density)
   if(length(acd_u) == 0) acd_u = NA
 
-  # Project-level independent variables: area, ACD of undisturbed forest, country, ecoregion
+  #project-level independent variables: area, ACD of undisturbed forest, country
   project_var = data.frame(acd_u = acd_u,
-                           area_ha = project_area_ha,
-                           country = myproj$COUNTRY)
+                           area_ha = area_ha,
+                           country = country)
 
-  # Find paths to match and unmatached points:
-  pair_paths = list.files(myproject_path, full = TRUE)
-  matchless_ind = pair_paths %>% str_detect('matchless')
+  #find paths to match and unmatached points
+  pair_paths = list.files(pair_dir, full = T)
+  matchless_ind = pair_paths %>% str_detect("matchless")
   matchless_paths = pair_paths[matchless_ind]
   matched_paths = pair_paths[!matchless_ind]
 
-  # Read and analyse pairs:
-  #j = 4 #to test just one pair
+  #loop through all pairs
   project_estimates = lapply(seq_along(matched_paths), function(j) {
     pairs = read_parquet(matched_paths[j])
     unmatched_pairs = read_parquet(matchless_paths[j])
 
     control = pairs %>%
-      dplyr::select(starts_with('s_')) %>%
-      rename_with(~str_replace(.x, 's_', '')) %>%
+      dplyr::select(starts_with("s_")) %>%
+      rename_with(~str_replace(.x, "s_", "")) %>%
       mutate(treatment = 'control') %>%
       tmfemi_reformat(t0 = t0)
 
     treat = pairs %>%
-      dplyr::select(starts_with('k_')) %>%
-      rename_with(~str_replace(.x, 'k_', '')) %>%
-      mutate(treatment = 'treatment') %>%
+      dplyr::select(starts_with("k_")) %>%
+      rename_with(~str_replace(.x, "k_", "")) %>%
+      mutate(treatment = "treatment") %>%
       tmfemi_reformat(t0 = t0)
 
     # Pair-level independent variables: median of all pixels in each pair (control + treat), then min/median/max across 100 pairs
@@ -183,14 +197,10 @@ proj_list = mclapply(seq_along(project_paths), mc.cores = 30, function(i) {
 
     pts_matched = rbind(treat, control)
 
-    # m.out=assess_balance(pts_matched, class_prefix = class_prefix, t0 = t0,
-    #                       match_years = match_years, match_classes = match_classes)
-    # summary(m.out, standardize = TRUE)
-
     control_series = simulate_area_series(pts_matched,
-                                           class_prefix, t0 = t0, match_years, match_classes,
-                                           exp_n_pairs, project_area_ha,
-                                           verbose = FALSE)
+                                          class_prefix, t0 = t0, match_years, match_classes,
+                                          exp_n_pairs, area_ha,
+                                          verbose = F)
 
     y = control_series$series %>%
       merge(., acd, by.x = "class", by.y = "land.use.class", all.x = T) %>%
@@ -199,14 +209,20 @@ proj_list = mclapply(seq_along(project_paths), mc.cores = 30, function(i) {
       summarise(carbon_content = sum(carbon_content, na.rm = T)) %>%
       ungroup()
 
-    year = y %>% filter(treatment == 'control') %>% pull(year)
-    yc = y %>% filter(treatment == 'control') %>% pull(carbon_content)
-    yt = y %>% filter(treatment == 'treatment')  %>% pull(carbon_content)
+    year = y %>% filter(treatment == "control") %>% pull(year)
+    yc = y %>% filter(treatment == "control") %>% pull(carbon_content)
+    yt = y %>% filter(treatment == "treatment")  %>% pull(carbon_content)
 
     out_df = data.frame(pair = j, year = year[-1], c_loss = -diff(yc), t_loss = -diff(yt)) %>%
       mutate(additionality = c_loss - t_loss)
 
-    return(list(pair_var = pair_var, out_df = out_df, biome_df = biome_df))
+    if(process_grid) {
+      pts_matched = pts_matched %>% mutate(pair = n_pair, pair_id = paste0(pair, "_", id))
+      return(list(pair_var = pair_var, out_df = out_df, biome_df = biome_df, pts_matched))
+
+    } else {
+      return(list(pair_var = pair_var, out_df = out_df, biome_df = biome_df))
+    }
   })
 
   pair_var_df = lapply(project_estimates, function(x) x$pair_var) %>% do.call(rbind, .)
@@ -229,17 +245,122 @@ proj_list = mclapply(seq_along(project_paths), mc.cores = 30, function(i) {
     do.call(rbind, .) %>%
     mutate(started = ifelse(year > t0, T, F))
 
+
+  # Process gridded subplots ----
+  if(process_grid & proj_id == grid_id) {
+    pts_matched = do.call(rbind, pts_matched)
+
+    grid_path = paste0("/maps/epr26/tmf-data-grid/", proj_id)
+    remerged_grid = read_rds(paste0(grid_path, "/", proj_id, "_remerged_grid.rds")) %>% st_as_sf()
+    grid_n = nrow(remerged_grid)
+    remerged_grid$name = 1:grid_n
+    remerged_grid$area_ha = st_area_ha(remerged_grid)
+    st_crs(pts_matched) = st_crs(remerged_grid)
+    project_pts_grid = st_join(pts_matched, remerged_grid, left = T)
+
+    #balance check
+    # table(project_pts_grid$name, project_pts_grid$treatment) #check balance: 31 is 0, 27 is 48 for Gola
+
+    # st_write(pts_matched %>% filter(treatment == "treatment"), paste0("/maps/epr26/tmf_pipe_out/orig_", proj, "pts_matched.geojson"), driver = "GeoJSON")
+    # st_write(project_pts_grid %>% filter(treatment == "treatment"), paste0("/maps/epr26/tmf_pipe_out/orig_", proj, "pts_grid_join.geojson"), driver = "GeoJSON")
+
+    # st_write(pts_matched %>% filter(treatment == "treatment"), paste0("/maps/epr26/tmf_pipe_out/", proj, "pts_matched.geojson"), driver = "GeoJSON")
+    # st_write(project_pts_grid %>% filter(treatment == "treatment"), paste0("/maps/epr26/tmf_pipe_out/", proj, "pts_grid_join.geojson"), driver = "GeoJSON")
+
+    #calculate observed additionality in each grid
+    obs_add_grid = lapply(seq_len(grid_n), function(i) {
+      pts_treatment_grid = project_pts_grid %>% filter(treatment == "treatment", name == i) %>% dplyr::select(-c("name", "area_ha"))
+      pts_control_grid = project_pts_grid %>% filter(treatment == "control", pair_id %in% pts_treatment_grid$pair_id) %>% dplyr::select(-c("name", "area_ha"))
+      pts_grid = rbind(pts_treatment_grid, pts_control_grid)
+
+      if(nrow(pts_grid) == 0) return(NA)
+
+      control_series = simulate_area_series(pts_grid,
+                                            class_prefix, t0 = t0, match_years, match_classes,
+                                            nrow(pts_grid) / 2, remerged_grid$area_ha[i],
+                                            verbose = FALSE)
+      y = control_series$series %>%
+        merge(., acd, by.x = "class", by.y = "land.use.class", all.x = T) %>%
+        mutate(carbon_content = class_area * carbon.density) %>%
+        group_by(treatment, year) %>%
+        summarise(carbon_content = sum(carbon_content, na.rm = T)) %>%
+        ungroup()
+
+      year = y %>% filter(treatment == 'control') %>% pull(year)
+      yc = y %>% filter(treatment == 'control') %>% pull(carbon_content)
+      yt = y %>% filter(treatment == 'treatment')  %>% pull(carbon_content)
+
+      out_df = data.frame(pair = i, year = year[-1], c_loss = -diff(yc), t_loss = -diff(yt)) %>%
+        mutate(additionality = c_loss - t_loss)
+
+      return(out_df)
+    })
+
+    #calculate vicinity baseline carbon loss rate for each grid
+    vicinity_grid = lapply(seq_len(grid_n), function(i) {
+      grid_out_path = paste0("/maps/epr26/tmf_pipe_out/", proj_id, "_grid/", i)
+
+      #vicinity baseline carbon loss rate: LUC change from undisturbed to deforested
+      defor = read_parquet(paste0(grid_out_path, "/", proj_id, "_", i, "matches.parquet")) %>%
+        dplyr::select(access, cpc0_u:cpc10_d) %>%
+        mutate(defor_5_0 = (cpc5_u - cpc0_u) / 5, defor_10_5 = (cpc10_u - cpc5_u) / 5, defor_10_0 = (cpc10_u - cpc0_u) / 10) %>%
+        mutate(acd_defor_5_0 = defor_5_0 * acd_change, acd_defor_10_5 = defor_10_5 * acd_change, acd_defor_10_0 = defor_10_0 * acd_change)
+
+      vicinity_area = nrow(defor) * 900 / 10000 #convert from number of 30x30m2 pixels to hectare
+
+      #@@@obtain grid-level independent variables:
+      #median of all pixels in each pair (control + treat), then min/median/max across 100 pairs
+      #elevation, slope, accessibility, cpc0/5/10_u, cpc0/5/10_d, defor_5_0 = cpc5_u - cpc0_u, defor_10_5 = cpc10_u - cpc5_u@@@
+
+
+      return(list(vicinity_area = vicinity_area, defor = defor))
+    })
+
+    vicinity_area_grid = sapply(vicinity_grid, function(x) x$vicinity_area)
+    c_loss_grid = lapply(vicinity_grid, function(x) x$defor)
+
+    grid_out_list = list(obs_add = obs_add_grid, vicinity_area = vicinity_area_grid, c_loss = c_loss_grid)
+  }
+
   b = Sys.time()
-  cat(b - a, "\n")
-  return(list(project_estimates = project_estimates, project_var = project_var_all))
+  cat(proj_id, ":", b - a, "\n")
+  if(process_grid & proj_id == grid_id) {
+    return(list(project_estimates = project_estimates, project_var = project_var_all, grid_out = grid_out_list))
+  } else {
+    return(list(project_estimates = project_estimates, project_var = project_var_all))
+  }
 })
 
+# Save outputs ----
+out_path = paste0("/maps/epr26/tmf_pipe_out/")
+
 project_var_df = lapply(proj_list, function(x) x$project_var) %>% do.call(rbind, .)
+saveRDS(project_var_df, file.path(paste0(out_path, "project_var.rds")))
 
 project_estimates_list = lapply(proj_list, function(x) x$project_estimates)
 names(project_estimates_list) = proj_id_list
+saveRDS(project_estimates_list, file.path(paste0(out_path, "project_estimates.rds")))
 
-out_path = paste0('/maps/epr26/tmf_pipe_out/')
 
-saveRDS(project_var_df, file.path(paste0(out_path, 'project_var.rds')))
-saveRDS(project_estimates_list, file.path(paste0(out_path, 'project_estimates.rds')))
+
+#@@@to be sorted out: plot to compare addditionaly whole or by grid@@@
+add_by_grid = obs_add_grid %>%
+  do.call(rbind, .) %>%
+  group_by(year) %>%
+  summarise(additionality = sum(additionality)) %>%
+  ungroup() %>%
+  filter(!is.na(year))
+
+add_whole = project_estimates %>%
+  group_by(year) %>%
+  summarise(additionality = mean(additionality),
+            add.max = max(additionality),
+            add.min = min(additionality)) %>%
+  ungroup() %>%
+  filter(!is.na(year))
+
+p_add_compare = ggplot(data = add_whole, aes(x = year, y = additionality)) +
+  geom_line(color = "black") +
+  geom_ribbon(aes(ymin = add.min, ymax = add.max), color = "grey", alpha = 0.5) +
+  geom_line(data = add_by_grid, color = "red") +
+  theme_bw()
