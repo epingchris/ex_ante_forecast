@@ -23,8 +23,8 @@ shp_id = list.files("/maps/epr26/tmf-data/projects", full = TRUE) %>%
   str_replace(".geojson", "")
 shp_id = shp_id[!shp_id %in% c("0000", "9999")] #test polygons
 shp_id = shp_id[!shp_id %in% c("1566", "1067", "958", "1133")] #problematic results
-shp_id = shp_id[!shp_id %in% acd_exclude] #not enough ACD data
-shp_id = shp_id[!shp_id %in% c("1359", "902"] #withdrawn and on hold
+shp_id = shp_id[!shp_id %in% acd_exclude] #incomplete ACD data
+shp_id = shp_id[!shp_id %in% c("1359", "902", "3347", "3335", "3114")] #withdrawn and on hold and under development
 
 proj_meta = read.csv("/home/tws36/4c_evaluations/data/project_metadata/proj_meta.csv") #for t0
 proj_meta %>% filter(ID %in% as.numeric(shp_id))

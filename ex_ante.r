@@ -10,44 +10,30 @@ library(sf)
 #load functions
 source("./functions.r") #cpc_rename, tmfemi_reformat
 
-
 # Load input data ----
+analysis_type = "epr26"
 
-#load the list of projects to be run
-myproject_path = "/maps/epr26/tmf_pipe_out/"
-exclude_id = c(562) # 562: not in TMF extent
+#load data
+if(analysis_type == "epr26") {
+  project_dir = "/maps/epr26/tmf_pipe_out/"
+  proj_meta = read.csv("/home/tws36/4c_evaluations/data/project_metadata/proj_meta.csv") #for t0
+  proj_var = readRDS(paste0(project_dir, "project_var.rds")) #for area
+  proj_estimate = readRDS(paste0(project_dir, "project_estimates.rds")) #for observed additionality
+  projects = names(proj_estimate)
+  proj_area = proj_var$area_ha
+  plot_nrow = ceiling(length(projects) / 3)
+}
 
-pair_paths = list.files(myproject_path, full = TRUE)
-matchless_ind = (pair_paths %>% str_detect("\\.") | pair_paths %>% str_detect("\\_grid") | pair_paths %>% str_detect("fit\\_distribution"))
-project_dir = pair_paths[!matchless_ind]
-projects = gsub(".*/(\\d+)$", "\\1", project_dir)
-projects = projects[which(projects %in% c("0000", "9999") == F)] %>%
-  as.numeric() %>%
-  sort() %>%
-  as.character()
-plot_nrow = ceiling(length(projects) / 3)
-
-#load metadata
-proj_meta = read.csv("/home/tws36/4c_evaluations/data/project_metadata/proj_meta.csv") #for t0
-proj_var = readRDS("/maps/epr26/tmf_pipe_out/project_var.rds") #for area
-proj_estimate = readRDS("/maps/epr26/tmf_pipe_out/project_estimates.rds") #for during-project additionality
-
-proj_area = proj_var %>%
-  filter(project %in% projects) %>%
-  mutate(project = as.numeric(project)) %>%
-  arrange(project) %>%
-  pull(area_ha)
-control = F
-
-#load controls
-control = T
-t0 = 2011
-projects = c(2, 3, 4, 5, 7)
-proj_area = sapply(seq_along(projects), function(i) {
-  a = st_read(paste0("/maps/epr26/tmf-data-grid/0000/0000_", i, ".geojson")) %>%
-    st_area_ha()
-  return(a)
-})
+if(analysis_type == "control") {
+  #load controls
+  t0 = 2011
+  projects = c(2, 3, 4, 5, 7)
+  proj_area = sapply(seq_along(projects), function(i) {
+    a = st_read(paste0("/maps/epr26/tmf-data-grid/0000/0000_", i, ".geojson")) %>%
+      st_area_ha()
+    return(a)
+  })
+}
 
 #load parameters
 thres = 1 #what proportion of most inaccessibility pixels to filter out; 1 means no filtering
@@ -56,64 +42,61 @@ make_plot = T
 
 proj_list = lapply(seq_along(projects), function(i) {
   c = Sys.time()
-  proj = projects[i]
+  proj_id = projects[i]
   area_ha = proj_area[i]
-  if(control) {
-    #@@@obs_val =
-  } else {
-    obs_val = proj_estimate[[proj]] %>% filter(started)
-  }
 
-  #carbon loss associated with LUC change undisturbed -> deforested (MgC / ha)
-  if(control) {
-    acd = read.csv(paste0("/maps/epr26/tmf_pipe_out/0000_grid/", proj, "/0000_", proj, "-carbon-density.csv"))
-  } else {
-    acd = read.csv(paste0("/maps/pf341/results/live-pipeline/", proj, "-carbon-density.csv"))
+  #obtain observed counterfactual C loss and additionality
+  if(analysis_type == "control") {
+    #@@@obs_val =
+  } else if(analysis_type == "epr26") {
+    obs_val = proj_estimate[[proj_id]] %>% filter(started)
   }
-  acd_change = ifelse(sum(is.na(acd$carbon.density[c(1, 3)])) == 0,
-                      acd$carbon.density[1] - acd$carbon.density[3], NA)
+  obs_c_loss_ha = obs_val$c_loss / area_ha
+  obs_add_ha = obs_val$additionality / area_ha
 
   #obtain vicinity baseline carbon loss rate
-  if(control) {
-    matches = read_parquet(paste0("/maps/epr26/tmf_pipe_out/0000_grid/", proj, "/0000_", proj, "matches.parquet"))
-  } else {
-    matches = read_parquet(paste0("/maps/epr26/tmf_pipe_out/", proj, "/", proj, "matches.parquet"))
+  if(analysis_type == "control") {
+    acd = read.csv(paste0(project_dir, "0000_grid/", proj_id, "/0000_", proj_id, "carbon-density.csv")) #@@@to be fixed
+    matches = read_parquet(paste0(project_dir, "0000_grid/", proj_id, "/0000_", proj_id, "matches.parquet")) #@@@to be fixed
+  } else if(analysis_type == "epr26") {
+    acd = read.csv(paste0(project_dir, proj_id, "/", proj_id, "carbon-density.csv"))
+    matches = read_parquet(paste0(project_dir, proj_id, "/", proj_id, "matches.parquet"))
   }
+  #carbon loss associated with LUC change undisturbed -> deforested (MgC / ha)
+  acd_1 = acd %>% filter(land.use.class == 1) %>% pull(carbon.density)
+  acd_3 = acd %>% filter(land.use.class == 3) %>% pull(carbon.density)
+  acd_change = ifelse(length(acd_1) + length(acd_3) == 2, acd_1 - acd_3, NA)
 
   max_access = max(matches$access, na.rm = T)
-
   matches_filtered = matches %>%
     filter(access < max_access * thres) %>%
     dplyr::select(access, cpc0_u:cpc10_d) %>%
     mutate(defor_5_0 = (cpc5_u - cpc0_u) / 5, defor_10_5 = (cpc10_u - cpc5_u) / 5, defor_10_0 = (cpc10_u - cpc0_u) / 10) %>%
     mutate(carbon_loss_5_0 = defor_5_0 * acd_change, carbon_loss_10_5 = defor_10_5 * acd_change, carbon_loss_10_0 = defor_10_0 * acd_change)
-#    mutate(defor = (cpc10_u - cpc0_u) / 10, carbon_loss = defor * acd_change)
     #convert from proportion of 30x30m2 pixels with change to MgC/ha
     #since previous data shows that the three time intervals are almost the same, only use one (t-10 to t0)
 
-  vicinity_area = nrow(matches_filtered) * 900 / 10000 #convert from numbers of 30x30m2 pixels to hectares
-  obs_c_loss_ha = obs_val$c_loss / area_ha
-  obs_add_ha = obs_val$additionality / area_ha
+  #get vicinity area: convert from numbers of 30x30m2 pixels to hectares
+  vicinity_area = nrow(matches_filtered) * 900 / 10000
 
-  c_loss_df = matches_filtered %>%
-    dplyr::select(carbon_loss_5_0:carbon_loss_10_0) %>%
-    pivot_longer(cols = everything(), values_to = "Value", names_to = "Period")
-
+  #create data for plotting
   plot_df = matches_filtered %>%
-    dplyr::select(carbon_loss_10_0) %>%
-    rename(Value = carbon_loss_10_0) %>%
-    mutate(Type = "baseline_c_loss") %>% #Baseline carbon loss
+    dplyr::select(carbon_loss_5_0:carbon_loss_10_0) %>%
+    pivot_longer(cols = everything(), values_to = "Value", names_to = "Period") %>%
+    mutate(Type = "baseline_c_loss") %>% #Baseline carbon loss in three periods
     #add counterfactual carbon loss after the project starts
     rbind(., data.frame(Value = obs_c_loss_ha,
+                        Period = "after",
                         Type = "obs_c_loss")) %>% #Observed counterfactual carbon loss (MgC/ha)
     #add additionality after the project starts
     rbind(., data.frame(Value = obs_add_ha,
+                        Period = "after",
                         Type = "obs_add")) #Observed additionality (MgC/ha)
 
   if(make_plot) {
-    plot_title = ifelse(control, paste("Control", proj), proj)
+    plot_title = ifelse(analysis_type == "control", paste("Control", proj_id), proj_id)
 
-    p0 = ggplot(data = c_loss_df, aes(Value, after_stat(density))) +
+    p0 = ggplot(data = plot_df %>% filter(Period != "after"), aes(Value, after_stat(density))) +
       geom_freqpoly(aes(color = Period)) +
       scale_color_manual(values = c("red", "black", "blue"),
                          labels = c(expression(t [-10]*" to "*t [0]),
@@ -126,7 +109,7 @@ proj_list = lapply(seq_along(projects), function(i) {
             legend.position = "bottom",
             legend.direction = "vertical")
 
-    p1 = ggplot(data = plot_df %>% filter(Type != "obs_add"), aes(Value, after_stat(density))) +
+    p1 = ggplot(data = plot_df %>% filter(Period == "carbon_loss_10_0" | Type == "obs_c_loss"), aes(Value, after_stat(density))) +
       geom_freqpoly(aes(color = Type, linetype = Type)) +
       scale_color_manual(values = c("red", "blue"),
                          labels = c("Baseline carbon loss",
@@ -141,7 +124,7 @@ proj_list = lapply(seq_along(projects), function(i) {
             legend.position = "bottom",
             legend.direction = "vertical")
 
-    p2 = ggplot(data = plot_df %>% filter(Type != "obs_c_loss"), aes(Value, after_stat(density))) +
+    p2 = ggplot(data = plot_df %>% filter(Period == "carbon_loss_10_0" | Type == "obs_add"), aes(Value, after_stat(density))) +
       geom_freqpoly(aes(color = Type, linetype = Type)) +
       scale_color_manual(values = c("red", "black"),
                          labels = c("Baseline carbon loss",
@@ -157,24 +140,23 @@ proj_list = lapply(seq_along(projects), function(i) {
             legend.direction = "vertical")
   }
 
+
+  distr_p = ggpubr::ggarrange(p1, p2, ncol = 2, nrow = 1)
   #obtain different quantiles of baseline carbon loss and calculate probability of overcrediting
   len_pr = length(pr_vec)
   carbon_loss_q = quantile(matches_filtered$carbon_loss_10_0, pr_vec)
   p_over = sapply(carbon_loss_q, function(x) length(which(obs_add_ha < x)) / length(obs_add_ha))
-  over_df = data.frame(pr = pr_vec,
+  over_df = data.frame(Pr = pr_vec,
                        carbon_loss_q = carbon_loss_q,
-                       p_over = p_over)
-  over_long = data.frame(Variable = c(rep("Percentile score", len_pr), rep("Overcrediting risk", len_pr)),
-                         Pr = pr_vec,
-                         Value = c(carbon_loss_q, p_over),
-                         ID = proj)
+                       p_over = p_over,
+                       ID = proj_id)
 
   d = Sys.time()
   cat(proj, ":", d - c, "\n")
   if(make_plot) {
-    out_list = list(vicinity_area = vicinity_area, plot_df = plot_df, over_df = over_df, over_long = over_long, plot0 = p0, plot1 = p1, plot2 = p2)
+    out_list = list(vicinity_area = vicinity_area, plot_df = plot_df, over_df = over_df, plot0 = p0, plot_distr = distr_p)
   } else {
-    out_list = list(vicinity_area = vicinity_area, plot_df = plot_df, over_df = over_df, over_long = over_long)
+    out_list = list(vicinity_area = vicinity_area, plot_df = plot_df, over_df = over_df)
   }
   return(out_list)
 })
@@ -193,22 +175,21 @@ basic_df = proj_meta %>%
 carbon_loss_q_df = proj_meta %>%
   filter(ID %in% projects) %>%
   arrange(ID) %>%
-  dplyr::select(c("Name", "ID")) %>%
+  dplyr::select(c("NAME", "ID")) %>%
   mutate(Variable = "Percentile") %>%
   cbind(., lapply(proj_list, function(x) x$over_df$carbon_loss_q) %>% do.call(rbind, .))
 
 p_over_df = proj_meta %>%
   filter(ID %in% projects) %>%
   arrange(ID) %>%
-  dplyr::select(c("Name", "ID")) %>%
+  dplyr::select(c("NAME", "ID")) %>%
   mutate(Variable = "Overcrediting risk") %>%
   cbind(., lapply(proj_list, function(x) x$over_df$p_over) %>% do.call(rbind, .))
 
-forecast_list = lapply(proj_list, function(x) x$over_long)
-  mutate(Pr = as.numeric(Pr), ID = as.factor(ID))
-
-forecast_p_list = lapply(seq_along(forecast_list), function(i) {
-  x = forecast_list[[i]] %>% mutate(Pr = as.numeric(Pr))
+forecast_p_list = lapply(seq_along(proj_list), function(i) {
+  x = proj_list[[i]]$over_df %>%
+    pivot_longer(cols = carbon_loss_q:p_over, names_to = "Variable", values_to = "Value") %>%
+    mutate(Pr = as.numeric(Pr), ID = as.factor(ID))
 
   percentile_p = ggplot(data = x %>% filter(Variable == "Percentile")) +
     geom_line(aes(x = Pr, y = Value), color = "blue") +
@@ -236,19 +217,18 @@ forecast_p_list = lapply(seq_along(forecast_list), function(i) {
   out_p = ggpubr::ggarrange(percentile_p, overcredit_p, ncol = 2, nrow = 1)
   return(out_p)
 })
-plot_over_all = ggpubr::ggarrange(plotlist = forecast_p_list, ncol = 3, nrow = plot_nrow, common.legend = T, legend = "bottom")
-ggsave(paste0("pr_overcrediting.png"), plot_over_all, width = 5000, height = 5000, units = "px", bg = "white")
-
-thres_text = gsub("\\.", "_", thres)
-write.table(basic_df, paste0("out_basic_info.csv"), sep = ",", row.names = F)
-write.table(forecast_df, paste0("out_forecast_", thres_text, ".csv"), sep = ",", row.names = F)
 
 plot0_list = lapply(proj_list, function(x) x$plot0)
 plot0_all = ggpubr::ggarrange(plotlist = plot0_list, ncol = 3, nrow = plot_nrow, common.legend = T, legend = "bottom")
 ggsave(paste0("hist_c_loss_periods_", thres_text, ".png"), plot0_all, width = 3000, height = 5000, units = "px", bg = "white")
-plot1_list = lapply(proj_list, function(x) x$plot1)
-plot1_all = ggpubr::ggarrange(plotlist = plot1_list, ncol = 3, nrow = plot_nrow, common.legend = T, legend = "bottom")
-ggsave(paste0("hist_c_loss_", thres_text, ".png"), plot1_all, width = 3000, height = 5000, units = "px", bg = "white")
-plot2_list = lapply(proj_list, function(x) x$plot2)
-plot2_all = ggpubr::ggarrange(plotlist = plot2_list, ncol = 3, nrow = plot_nrow, common.legend = T, legend = "bottom")
-ggsave(paste0("hist_add_", thres_text, ".png"), plot2_all, width = 3000, height = 5000, units = "px", bg = "white")
+
+plot_distr_list = lapply(proj_list, function(x) x$plot_distr)
+plot_distr_all = ggpubr::ggarrange(plotlist = plot_distr_list, ncol = 3, nrow = plot_nrow, common.legend = T, legend = "bottom")
+ggsave(paste0("hist_c_loss_", thres_text, ".png"), plot_distr_all, width = 5000, height = 5000, units = "px", bg = "white")
+
+plot_over_all = ggpubr::ggarrange(plotlist = forecast_p_list, ncol = 3, nrow = plot_nrow, common.legend = T, legend = "bottom")
+ggsave(paste0("plot_distributions.png"), plot_over_all, width = 5000, height = 5000, units = "px", bg = "white")
+
+thres_text = gsub("\\.", "_", thres)
+write.table(basic_df, paste0("out_basic_info.csv"), sep = ",", row.names = F)
+write.table(forecast_df, paste0("out_forecast_", thres_text, ".csv"), sep = ",", row.names = F)
