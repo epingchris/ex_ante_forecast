@@ -30,7 +30,7 @@ library(ggpubr) #ggpubr::ggarrange
 
 source("functions.r") #cpc_rename, tmfemi_reformat
 source("ProcessPairs.r") #RetrievePoints, ProcessPairs
-source("./CalcExAnte.r")
+source("CalcExAnte.r")
 
 # Load Tom's script ----
 orig_dir = getwd()
@@ -61,8 +61,8 @@ match_classes = c(1, 3)
 # Load parameters ----
 #input: project_dir, exclude_id, acd_id
 #output: projects, pair_dirs, acd_dir
-analysis_type = "control" #"old_source", "full", "grid", "ac", "control"
-stratified = T #stratify project pixels by accessibility
+analysis_type = "grid" #"old_source", "full", "grid", "ac", "control"
+stratified = F #stratify project pixels by accessibility
 pr_vec = seq(0.01, 0.99, by = 0.01) #different quantiles of baseline carbon loss to test
 
 if(analysis_type == "old_source") {
@@ -113,7 +113,7 @@ if(analysis_type == "old_source") {
 } else if(analysis_type == "grid") {
 
   project_dir = "/maps/epr26/tmf_pipe_out/1201_grid/"
-  projects = c(1:21, 23:25, 29, 33:35, 38:49) #22, 26, 27, 28, 30, 31, 32, 36, 37 undersampled
+  projects = 1:49 #27, 31 with no matches
   pair_dirs = paste0(project_dir, projects, "/pairs/")
   acd_dirs = paste0(project_dir, projects, "/")
 
@@ -188,6 +188,13 @@ additionality_out = lapply(seq_along(projects), function(i) { #mclapply() does n
   matchless_paths = pair_paths[matchless_ind]
   matched_paths = pair_paths[!matchless_ind]
 
+  #exit if no matches
+  if(length(matched_paths) == 0) {
+    project_var = data.frame(t0 = t0, country = country, acd_u = acd_u, area_ha = area_ha) %>%
+    mutate(project = paste0("0000_", proj_id))
+    return(list(project_var = project_var, additionality_estimates = NULL))
+  }
+
   #find biome of project pixels
   k = read_parquet(paste0(file_prefix, "k.parquet")) %>%
     dplyr::select(c("lat", "lng", "ecoregion"))
@@ -244,7 +251,7 @@ out_prefix = ifelse(analysis_type == "grid", "grid_1201", analysis_type)
 out_path = paste0("/maps/epr26/tmf_pipe_out/out_", out_prefix)
 
 #project-level variables
-project_var = lapply(additionality_out, function(x) x$project_var) %>% do.call(rbind, .)
+project_var = lapply(additionality_out, function(x) x$project_var) %>% do.call(dplyr::bind_rows, .)
 saveRDS(project_var, paste0(out_path, "_project_var.rds"))
 
 #additionality time series
@@ -257,6 +264,11 @@ saveRDS(additionality_estimates, paste0(out_path, "_additionality_estimates.rds"
 ex_ante_out = lapply(seq_along(projects), function(i) {
   proj_id = projects[i]
   area_ha = project_var$area_ha[i]
+  if(is.null(additionality_estimates[[i]])) {
+    return(list(vicinity_area = NA, plot_df = NULL, forecast_df = NULL,
+                p0 = NULL, p1 = NULL, p2 = NULL, p_legend_grob = NULL, p_perc = NULL, p_overcredit = NULL))
+  }
+
   obs_val = additionality_estimates[[i]] %>%
     filter(started) %>%
     mutate(c_loss = c_loss / area_ha, additionality = additionality / area_ha)
@@ -309,28 +321,32 @@ SaveMultiPagePlot = function(plots, suffix) {
 
 #plot of different baseline periods
 x_max = sapply(ex_ante_out, function(x) {
+  if(is.null(x$plot_df)) return(NA)
   x$plot_df %>%
     filter(Period != "after") %>%
     pull(Value) %>%
     max()
 })
 plot_period = lapply(ex_ante_out, function(x) {
-  x$p0 + scale_x_continuous(limits = c(0, max(x_max)))
+  if(is.null(x$p0)) return(NULL)
+  x$p0 + scale_x_continuous(limits = c(0, max(x_max, na.rm = T)))
 }) %>%
   ggpubr::ggarrange(plotlist = ., ncol = 3, nrow = 3, common.legend = T, legend = "bottom")
 SaveMultiPagePlot(plot_period, "c_loss_periods")
 
 #plot of distributions
 x_range = sapply(ex_ante_out, function(x) {
+  if(is.null(x$plot_df)) return(NA)
   x$plot_df %>%
     filter(str_detect(Period, "10_0") | str_detect(Type, "obs")) %>%
     pull(Value) %>%
     range()
-})
+}) %>% unlist()
 plot_distr = lapply(seq_along(ex_ante_out), function(i) {
   x = ex_ante_out[[i]]
-  x1 = x$p1 + ggtitle("") + scale_x_continuous(limits = c(min(x_range[1, ]), max(x_range[2, ])))
-  x2 = x$p2 + ggtitle("") + scale_x_continuous(limits = c(min(x_range[1, ]), max(x_range[2, ])))
+  if(is.null(x$p1)) return(NULL)
+  x1 = x$p1 + ggtitle("") + scale_x_continuous(limits = c(min(x_range, na.rm = T), max(x_range, na.rm = T)))
+  x2 = x$p2 + ggtitle("") + scale_x_continuous(limits = c(min(x_range, na.rm = T), max(x_range, na.rm = T)))
   x_legend = x$p_legend_grob
   p_1_2 = ggpubr::ggarrange(x1, x2, ncol = 2, nrow = 1, common.legend = T, legend = "bottom", legend.grob = x_legend)
   ggpubr::annotate_figure(p_1_2, top = ggpubr::text_grob(projects[i], face = "bold", size = 14))
@@ -341,6 +357,7 @@ SaveMultiPagePlot(plot_distr, "distribution")
 #plot of forecast and overcrediting risk
 plot_forecast = lapply(seq_along(ex_ante_out), function(i) {
   x = ex_ante_out[[i]]
+  if(is.null(x$p_perc)) return(NULL)
   x1 = x$p_perc + ggtitle("")
   x2 = x$p_overcredit + ggtitle("")
   p_1_2 = ggpubr::ggarrange(x1, x2, ncol = 2, nrow = 1)
@@ -348,23 +365,3 @@ plot_forecast = lapply(seq_along(ex_ante_out), function(i) {
 }) %>%
   ggpubr::ggarrange(plotlist = ., ncol = 3, nrow = 3, common.legend = T, legend = "bottom")
 SaveMultiPagePlot(plot_forecast, "forecast")
-
-# table for percentile and corresponding overcrediting risk
-# carbon_loss_q_df = proj_info %>%
-#   dplyr::select(c("NAME", "ID")) %>%
-#   mutate(Variable = "Percentile") %>%
-#   cbind(., lapply(proj_list, function(x) {
-#     if(is.null(x$over_df)) return(NA)
-#     return(x$over_df$carbon_loss_q)
-#   }) %>%
-#     do.call(rbind, .))
-
-# p_over_df = proj_info %>%
-#   dplyr::select(c("NAME", "ID")) %>%
-#   mutate(Variable = "Overcrediting risk") %>%
-#   cbind(., lapply(proj_list, function(x) {
-#     if(is.null(x$over_df)) return(NA)
-#     return(x$over_df$p_over)
-#   }) %>%
-#     do.call(rbind, .))
-# write.table(forecast_df, paste0("out_forecast.csv"), sep = ",", row.names = F)
