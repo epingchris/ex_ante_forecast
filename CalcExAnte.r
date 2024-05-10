@@ -46,6 +46,8 @@ CalcExAnte = function(proj_id, area_ha, obs_val, path, forecast = F) {
                              Pr = pr_vec,
                              Variable = rep(c("Percentile", "Overcrediting risk"), each = length(pr_vec)),
                              Value = c(carbon_loss_q, p_over))
+
+    pr_max_zero = pr_vec[tail(which(carbon_loss_q == 0), 1)]
   }
 
   #make plo title
@@ -67,39 +69,54 @@ CalcExAnte = function(proj_id, area_ha, obs_val, path, forecast = F) {
           legend.direction = "vertical")
 
   if(!forecast) {
+    p_legend = ggplot(data = plot_df %>% filter(str_detect(Period, "10_0") | str_detect(Type, "obs")), aes(Value, after_stat(density))) +
+      geom_freqpoly(aes(color = Type, linetype = Type)) +
+      scale_color_manual(values = c("red", "black", "blue"),
+                        labels = c("Pre-project carbon loss",
+                                   "During-project additionality",
+                                   "During-project counterfactual carbon loss")) +
+      scale_linetype_manual(values = c(2, 1, 1),
+                            labels = c("Pre-project carbon loss",
+                                       "During-project additionality",
+                                       "During-project counterfactual carbon loss")) +
+      theme(legend.key = element_rect(fill = "white"),
+            legend.position = "bottom",
+            legend.direction = "vertical")
+    p_legend_grob = ggpubr::get_legend(p_legend)
+
     p1 = ggplot(data = plot_df %>% filter(Period == "carbon_loss_10_0" | Type == "obs_c_loss"), aes(Value, after_stat(density))) +
       geom_freqpoly(aes(color = Type, linetype = Type)) +
-      scale_color_manual(values = c("red", "blue"),
-                        labels = c("Baseline carbon loss",
-                                    "Observed counterfactual carbon loss")) +
+      scale_color_manual(values = c("red", "black", "blue"),
+                        labels = c("Pre-project carbon loss",
+                                   "During-project counterfactual carbon loss")) +
       scale_linetype_manual(values = c(2, 1),
-                            labels = c("Baseline carbon loss",
-                                      "Observed counterfactual carbon loss")) +
+                            labels = c("Pre-project carbon loss",
+                                       "During-project additionality",
+                                       "During-project counterfactual carbon loss")) +
       xlab("Annual carbon flux (Mg/ha)") +
       ggtitle(plot_title) +
       theme_bw() +
       theme(panel.grid = element_blank(),
-            legend.position = "bottom",
-            legend.direction = "vertical")
+            legend.position = "none")
 
     p2 = ggplot(data = plot_df %>% filter(Period == "carbon_loss_10_0" | Type == "obs_add"), aes(Value, after_stat(density))) +
       geom_freqpoly(aes(color = Type, linetype = Type)) +
       scale_color_manual(values = c("red", "black"),
-                        labels = c("Baseline carbon loss",
-                                    "Observed additionality")) +
+                        labels = c("Pre-project carbon loss",
+                                    "During-project additionality")) +
       scale_linetype_manual(values = c(2, 1),
-                            labels = c("Baseline carbon loss",
-                                      "Observed additionality")) +
+                            labels = c("Pre-project carbon loss",
+                                      "During-project additionality")) +
       xlab("Annual carbon flux (Mg/ha)") +
       ggtitle(plot_title) +
       theme_bw() +
       theme(panel.grid = element_blank(),
-            legend.position = "bottom",
-            legend.direction = "vertical")
+            legend.position = "none")
 
     p_perc = ggplot(data = forecast_df %>% filter(Variable == "Percentile")) +
       geom_line(aes(x = Pr, y = Value), color = "blue") +
       geom_hline(yintercept = 0, linetype = 2) +
+      geom_vline(xintercept = pr_max_zero, linetype = 2) +
       scale_x_continuous(breaks = c(0, 0.25, 0.5, 0.75, 1), labels = c("0", "0.25", "0.5", "0.75", "1")) +
       scale_y_continuous(limits = c(0, 5)) +
       labs(title = plot_title, x = "Percentage", y = "C loss percentile") +
@@ -112,6 +129,7 @@ CalcExAnte = function(proj_id, area_ha, obs_val, path, forecast = F) {
     p_overcredit = ggplot(data = forecast_df %>% filter(Variable == "Overcrediting risk")) +
       geom_line(aes(x = Pr, y = Value), color = "red") +
       geom_hline(yintercept = c(0.05, 0.1), linetype = 2) +
+      geom_vline(xintercept = pr_max_zero, linetype = 2) +
       scale_x_continuous(breaks = c(0, 0.25, 0.5, 0.75, 1), labels = c("0", "0.25", "0.5", "0.75", "1")) +
       scale_y_continuous(limits = c(0, 1)) +
       labs(title = "", x = "Percentage", y = "Overcrediting risk") +
@@ -125,7 +143,7 @@ CalcExAnte = function(proj_id, area_ha, obs_val, path, forecast = F) {
   cat(proj_id, ":", d - c, "\n")
   if(!forecast) {
     return(list(vicinity_area = vicinity_area, plot_df = plot_df, forecast_df = forecast_df,
-                p0 = p0, p1 = p1, p2 = p2, p_perc = p_perc, p_overcredit = p_overcredit))
+                p0 = p0, p1 = p1, p2 = p2, p_legend_grob = p_legend_grob, p_perc = p_perc, p_overcredit = p_overcredit))
   } else {
     return(list(vicinity_area = vicinity_area, plot_df = plot_df, p0 = p0))
   }
