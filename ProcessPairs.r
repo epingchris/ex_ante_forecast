@@ -1,4 +1,7 @@
 RetrievePoints = function(matched_path, matchless_path, k, matches, t0) {
+    k = k %>% dplyr::select(c("lat", "lng", "ecoregion"))
+    matches = matches %>% dplyr::select(c("lat", "lng", "ecoregion"))
+
     pairs = read_parquet(matched_path) %>%
         dplyr::left_join(., k, by = join_by(k_lat == lat, k_lng == lng)) %>%
         rename(k_ecoregion = ecoregion) %>%
@@ -32,32 +35,52 @@ ProcessPairs = function(matched_path, matchless_path, k, matches, t0, area_ha, a
 
     points = RetrievePoints(matched_path, matchless_path, k, matches, t0)
     exp_n_pairs = points$exp_n_pairs
-    pts_matched = points$pts_matched
+    pts_matched = points$pts_matched %>%
+        mutate(defor_5_0 = (cpc5_u - cpc0_u) / 5, defor_10_5 = (cpc10_u - cpc5_u) / 5, defor_10_0 = (cpc10_u - cpc0_u) / 10)
+
+
+    #project pixel and matched pixel's pre-project CPC change
+    cpcc = list(treatment = pts_matched %>% filter(treatment == "treatment") %>% pull(defor_10_0),
+                control = pts_matched %>% filter(treatment == "control") %>% pull(defor_10_0))
 
     # Pair-level independent variables: median of all pixels in each pair (control + treat), then min/median/max across 100 pairs
     # elevation, slope, accessibility, cpc0/5/10_u, cpc0/5/10_d, defor_5_0 = cpc5_u - cpc0_u, defor_10_5 = cpc10_u - cpc5_u
     pair_var = pts_matched %>%
-        dplyr::select(elevation:cpc10_d) %>%
-        mutate(defor_5_0 = (cpc5_u - cpc0_u) / 5, defor_10_5 = (cpc10_u - cpc5_u) / 5) %>%
         reframe(elevation = median(elevation),
-            slope = median(slope),
-            accessibility = median(accessibility),
-            cpc0_u = median(cpc0_u),
-            cpc0_d = median(cpc0_d),
-            cpc5_u = median(cpc5_u),
-            cpc5_d = median(cpc5_d),
-            cpc10_u = median(cpc10_u),
-            cpc10_d = median(cpc10_d),
-            defor_5_0 = median(defor_5_0),
-            defor_10_5 = median(defor_10_5)) %>%
-        pivot_longer(cols = elevation:defor_10_5, names_to = "var", values_to = "val") %>%
+                slope = median(slope),
+                accessibility = median(accessibility),
+                cpc0_u = median(cpc0_u),
+                cpc0_d = median(cpc0_d),
+                cpc5_u = median(cpc5_u),
+                cpc5_d = median(cpc5_d),
+                cpc10_u = median(cpc10_u),
+                cpc10_d = median(cpc10_d),
+                defor_5_0 = median(defor_5_0),
+                defor_10_5 = median(defor_10_5),
+                defor_10_0 = median(defor_10_0)) %>%
+        pivot_longer(cols = elevation:defor_10_0, names_to = "var", values_to = "val") %>%
         mutate(pair = pair_id)
+
+    pair_biome = pts_matched$biome
 
     #calculate annual proportion of each land use class
     luc_series = simulate_area_series(pts_matched,
                                       class_prefix, t0 = t0, match_years, match_classes,
                                       exp_n_pairs, area_ha,
                                       verbose = F)
+
+    #project pixel and matched pixel's pre-project and during-project LUC change
+    luc_diff = luc_series$series %>%
+        group_by(treatment, class) %>%
+        reframe(year = year[-1],
+                prop_df = -diff(class_prop)) %>%
+        ungroup() %>%
+        mutate(started = (year > t0))
+
+    lucc = list(treatment_pre = luc_diff %>% filter(treatment == "treatment" & !started & class == "1") %>% pull(prop_df),
+                control_pre = luc_diff %>% filter(treatment == "control" & !started & class == "1") %>% pull(prop_df),
+                treatment_during = luc_diff %>% filter(treatment == "treatment" & started & class == "1") %>% pull(prop_df),
+                control_during = luc_diff %>% filter(treatment == "control" & started & class == "1") %>% pull(prop_df))
 
     #calculate annual carbon stock (Mg)
     carbon_series = luc_series$series %>%
@@ -75,5 +98,5 @@ ProcessPairs = function(matched_path, matchless_path, k, matches, t0, area_ha, a
         mutate(additionality = c_loss - t_loss, pair = pair_id)
     d = Sys.time()
     cat(pair_id, ":", d - c, "\n")
-    return(list(pair_var = pair_var, out_df = out_df))
+    return(list(pair_var = pair_var, out_df = out_df, cpcc = cpcc, lucc = lucc, biome = pair_biome))
 }
