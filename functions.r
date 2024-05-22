@@ -39,4 +39,20 @@ tmfemi_reformat <- function(df, t0) {
   return(df)
 }
 
-cat("These functions require dplyr and stars packages")
+#functions for multi-page plots
+SaveMultiPagePlot = function(plots, suffix, width = 5000, height = 3000) {
+  if(class(plots)[1] == "list") {
+    lapply(seq_along(plots), function(i) {
+      ggsave(paste0(out_path, "_", suffix, "_", i, ".png"), plots[[i]],
+             width = width, height = height, units = "px", bg = "white")
+    })
+  } else {
+    ggsave(paste0(out_path, "_", suffix, ".png"), plots,
+           width = width, height = height, units = "px", bg = "white")
+  }
+}
+
+cat("These functions require ggplot2, dplyr and stars packages")
+
+#function to turn empty object as NA
+fillNA = function(x) if (length(x) == 0) return(NA) else return(x)

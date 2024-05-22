@@ -30,7 +30,7 @@ library(ggpubr) #ggpubr::ggarrange
 
 source("functions.r") #cpc_rename, tmfemi_reformat
 source("ProcessPairs.r") #RetrievePoints, ProcessPairs
-source("CalcExAnte.r")
+source("PlotExAnte.r")
 
 # Load Tom's script ----
 orig_dir = getwd()
@@ -61,9 +61,9 @@ match_classes = c(1, 3)
 # Load parameters ----
 #input: project_dir, exclude_id, acd_id
 #output: projects, pair_dirs, acd_dir
-analysis_type = "control" #"old_source", "full", "grid", "ac", "control"
+analysis_type = "full" #"old_source", "full", "grid", "ac", "control"
+forecast = (analysis_type == "ac")
 stratified = F #stratify project pixels by accessibility
-forecast = (analysis_type == "ac") #forecast; do not print observed values in output of ex ante analysis
 pr_vec = seq(0.01, 0.99, by = 0.01) #different quantiles of baseline carbon loss to test
 
 if(analysis_type == "old_source") {
@@ -137,7 +137,11 @@ if(analysis_type == "old_source") {
 
 }
 
+out_prefix = ifelse(analysis_type == "grid", "grid_1201", analysis_type)
+out_path = paste0("/maps/epr26/tmf_pipe_out/out_", out_prefix)
+
 # Loop through all projects ----
+#additionality_out = mclapply(seq_along(projects), mc.cores = 7, function(i) { #mclapply() does not work on Windows
 additionality_out = lapply(seq_along(projects), function(i) { #mclapply() does not work on Windows
   a = Sys.time()
 
@@ -147,11 +151,22 @@ additionality_out = lapply(seq_along(projects), function(i) { #mclapply() does n
   }
 
   proj_id = projects[i]
+
+  proj_name = switch(analysis_type,
+              "full" = proj_id,
+              "grid" = paste0("1201_", proj_id),
+              "control" = paste0("0000_", proj_id),
+              "ac" = proj_id)
+
   t0 = switch(analysis_type,
               "full" = filter(proj_meta, ID == str_replace(proj_id, "a", ""))$t0,
               "grid" = filter(proj_meta, ID == "1201")$t0,
               "control" = 2011,
               "ac" = 2021)
+
+  #column names to select from vicinity
+  luc_t_10 = paste0("luc_", t0 - 10)
+  luc_t0 = paste0("luc_", t0)
 
   country = switch(analysis_type,
                    "full" = filter(proj_meta, ID == str_replace(proj_id, "a", ""))$COUNTRY,
@@ -180,13 +195,27 @@ additionality_out = lapply(seq_along(projects), function(i) { #mclapply() does n
                               "ac" = ""),
                        proj_id)
   acd = read.csv(paste0(file_prefix, "carbon-density.csv"))
-  k = read_parquet(paste0(file_prefix, "k.parquet")) #for biome of project pixels
-  matches = read_parquet(paste0(file_prefix, "matches.parquet")) #for biome of matched pixels
+
+  k = read_parquet(paste0(file_prefix, "k.parquet")) %>%
+      dplyr::select(c("lat", "lng", "ecoregion")) %>%
+      rename(k_ecoregion = ecoregion) #for biome of project pixels
+  matches = read_parquet(paste0(file_prefix, "matches.parquet")) %>%
+      dplyr::select(c("lat", "lng", "ecoregion", paste0("luc_", t0 - 10), paste0("luc_", t0), "cpc10_u", "cpc0_u")) %>%
+      mutate(defor_10_0 = (cpc10_u - cpc0_u) / 10) %>%
+      rename(s_ecoregion = ecoregion) #for biome of matched pixels
   vicinity_area = nrow(matches) * 900 / 10000 #convert from numbers of 30x30m2 pixels to hectares
+  vicinity = matches[sample(nrow(matches), 2500000), ] %>% #sub-sample project vicinity down to around the smallest vicinity size of the 15 projects (2559309)
+    dplyr::select(c("cpc10_u", "cpc0_u", luc_t_10, luc_t0))
 
   #get ACD of undisturbed forest, gather project-level variables
-  acd_u = filter(acd, land.use.class == 1)$carbon.density
-  if(length(acd_u) == 0) acd_u = NA
+  acd_1 = filter(acd, land.use.class == 1)$carbon.density
+  acd_3 = filter(acd, land.use.class == 3)$carbon.density
+  acd_change = acd_1 - acd_3
+  if(length(acd_1) == 0) acd_1 = NA
+  if(length(acd_change) == 0) acd_change = NA
+
+  #gather common project-level variables
+  project_var = data.frame(t0 = t0, country = country, acd_1 = acd_1, area_ha = area_ha, vicinity_area = vicinity_area, project = proj_name)
 
   #find paths to match and unmatached points in each sampled pairs
   pair_paths = list.files(pair_dirs[i], full = T) %>% str_subset(".parquet")
@@ -195,73 +224,30 @@ additionality_out = lapply(seq_along(projects), function(i) { #mclapply() does n
   matched_paths = pair_paths[!matchless_ind]
 
   #exit if no matches
-  if(length(matched_paths) == 0) {
-    project_var = data.frame(t0 = t0, country = country, acd_u = acd_u, area_ha = area_ha, vicinity_area = vicinity_area) %>%
-      mutate(project = paste0("0000_", proj_id))
-    return(list(project_var = project_var, additionality_estimates = NULL))
-  }
+  if(length(matched_paths) == 0) return(list(project_var = project_var, additionality_estimates = NULL))
 
   if(stratified) {
     #loop through all sampled pairs and only extract points for stratification
-    out = lapply(seq_along(matched_paths), function(j) {
+    pairs_out = lapply(seq_along(matched_paths), function(j) {
       RetrievePoints(matched_path = matched_paths[j], matchless_path = matchless_paths[j],
-                           k = k, matches = matches, t0 = t0)
+                     k = k, matches = matches %>% dplyr::select(c("lat", "lng", "s_ecoregion")), t0 = t0)
     })
 
-    exp_n_pairs_out = lapply(out, function(x) x$exp_n_pairs)
-    points_out = lapply(out, function(x) x$pts_matched)
+    exp_n_pairs_out = lapply(pairs_out, function(x) x$exp_n_pairs)
+    points_out = lapply(pairs_out, function(x) x$pts_matched)
 
-    points_out_df = points_out %>% do.call(rbind, .)
+    points_out_df = points_out %>% do.call(dplyr::bind_rows, .)
   } else {
     #loop through all sampled pairs and get additionality series in each pair
     pairs_out = lapply(seq_along(matched_paths), function(j) {
       ProcessPairs(matched_path = matched_paths[j], matchless_path = matchless_paths[j],
-                   k = k, matches = matches, t0 = t0, area_ha = area_ha, acd = acd, pair_id = j)
+                   k = k, matches = matches %>% dplyr::select(c("lat", "lng", "s_ecoregion")),
+                   t0 = t0, area_ha = area_ha, acd = acd, pair_id = j)
     })
   }
 
-  #compare deforestation rate based on proportion of pixel-level LUC change and based on CPC change
-  transition_10_0 = as.data.frame(table(paste(matches$luc_2001, matches$luc_2011, sep = "_")))
-  #pre-project CPC change of project and matched pixels (in each year in each pair)
-  #pre-project CPC change of project vicinity (in each pixel)
-  #pre-project LUC change of project and matched pixels (in each year in each pair)
-  #pre-project CPC change of project vicinity (in each pixel)
-  #during-project LUC change of project and matched pixels (in each year in each pair)
-  cpcc_lucc_long = do.call(rbind,
-    list(data.frame(Type = "CPC", Period = "Pre-project", var = "obs_cpcc_treatment", val = lapply(pairs_out, function(x) x$cpcc$treatment) %>% unlist()),
-         data.frame(Type = "CPC", Period = "Pre-project", var = "obs_cpcc_control", val = lapply(pairs_out, function(x) x$cpcc$control) %>% unlist()),
-         data.frame(Type = "CPC", Period = "Pre-project", var = "vicinity_cpcc", val = (matches$cpc10_u - matches$cpc0_u) / 10),
-         data.frame(Type = "LUC", Period = "Pre-project", var = "obs_lucc_treatment_pre", val = lapply(pairs_out, function(x) x$lucc$treatment_pre) %>% unlist()),
-         data.frame(Type = "LUC", Period = "Pre-project", var = "obs_lucc_control_pre", val = lapply(pairs_out, function(x) x$lucc$control_pre) %>% unlist()),
-         data.frame(Type = "LUC", Period = "Pre-project", var = "vicinity_lucc", val = sum(filter(transition_10_0, Var1 %in% c("1_2", "1_3", "1_4"))$Freq) / nrow(matches)),
-         data.frame(Type = "LUC", Period = "During-project", var = "obs_lucc_treatment_during", val = lapply(pairs_out, function(x) x$lucc$treatment_during) %>% unlist()),
-         data.frame(Type = "LUC", Period = "During-project", var = "obs_lucc_control_during", val = lapply(pairs_out, function(x) x$lucc$control_during) %>% unlist())))
-  cpcc_lucc_long$Type = factor(cpcc_lucc_long$Type, levels = c("CPC", "LUC"))
-  cpcc_lucc_long$Period = factor(cpcc_lucc_long$Period, levels = c("Pre-project", "During-project"))
-  cpcc_lucc_long$var = factor(cpcc_lucc_long$var, levels = c("obs_cpcc_treatment", "obs_cpcc_control", "vicinity_cpcc",
-                                                             "obs_lucc_treatment_pre", "obs_lucc_control_pre", "vicinity_lucc",
-                                                             "obs_lucc_treatment_during", "obs_lucc_control_during"))
-
-  cpcc_lucc_summ = cpcc_lucc_long %>%
-    group_by(var) %>%
-    reframe(min = min(val),
-            q1 = quantile(val, 0.25),
-            median = median(val),
-            mean = mean(val),
-            q3 = quantile(val, 0.75),
-            max = max(val)) %>%
-    mutate(project = proj_id)
-
-  p = ggplot(data = cpcc_lucc_long, aes(x = var, y = sqrt(val * 100))) +
-    geom_boxplot(aes(color = Type, linetype = Period)) +
-    scale_x_discrete(labels = c("Project", "Counterfactual", "Vicinity",
-                                "Project", "Counterfactual", "Vicinity",
-                                "Project", "Counterfactual")) +
-    scale_color_manual(values = c("red", "blue")) +
-    scale_linetype_manual(values = 1:2) +
-    labs(x = "Variable", y = "Sqrt(Annual forest loss(%))") +
-    theme_bw() +
-    theme(axis.text.x = element_text(size = 12))
+  cpcc = lapply(pairs_out, function(x) x$cpcc) %>% do.call(dplyr::bind_rows, .) #use bind_rows() for speed
+  lucc = lapply(pairs_out, function(x) x$lucc) %>% do.call(dplyr::bind_rows, .)
 
   #combine pair-level variables and project-level variables
   pair_biome = lapply(pairs_out, function(x) x$biome) %>%
@@ -271,7 +257,7 @@ additionality_out = lapply(seq_along(projects), function(i) { #mclapply() does n
     names()
 
   pair_var_summary = lapply(pairs_out, function(x) x$pair_var) %>%
-    do.call(rbind, .) %>%
+    do.call(dplyr::bind_rows, .) %>%
     group_by(var) %>%
     summarise(min = min(val), median = median(val), max = max(val)) %>%
     pivot_longer(cols = min:max, names_to = "stat", values_to = "val") %>%
@@ -280,55 +266,155 @@ additionality_out = lapply(seq_along(projects), function(i) { #mclapply() does n
     pivot_wider(names_from = "var", values_from = "val") %>%
     mutate(biome = pair_biome)
 
-  project_var = data.frame(t0 = t0, country = country, acd_u = acd_u, area_ha = area_ha, vicinity_area = vicinity_area) %>%
-    cbind(., pair_var_summary) %>%
-    mutate(project = proj_id)
+  project_var = cbind(project_var, pair_var_summary)
 
   additionality_estimates = lapply(pairs_out, function(x) x$out_df) %>%
-    do.call(rbind, .) %>%
+    do.call(dplyr::bind_rows, .) %>%
     mutate(started = ifelse(year > t0, T, F))
 
   b = Sys.time()
   cat(proj_id, ":", b - a, "\n")
   return(list(project_var = project_var, additionality_estimates = additionality_estimates,
-              plot_cpcc_lucc = p, cpcc_lucc_summ = cpcc_lucc_summ))
+              cpcc = cpcc, lucc = lucc, vicinity = vicinity))
 })
+names(additionality_out) = projects
 
 
 # Save additionality outputs ----
-out_prefix = ifelse(analysis_type == "grid", "grid_1201", analysis_type)
-out_path = paste0("/maps/epr26/tmf_pipe_out/out_", out_prefix)
-
 #project-level variables
 project_var = lapply(additionality_out, function(x) x$project_var) %>% do.call(dplyr::bind_rows, .)
+#use bind_rows because of potentially different numbers of columns
 saveRDS(project_var, paste0(out_path, "_project_var.rds"))
+#project_var = read_rds(paste0(out_path, "_project_var.rds"))
+
+#basic information
+basic_df = project_var %>% dplyr::select(t0, country, area_ha, vicinity_area, project)
+write.table(basic_df, paste0(out_path, "_basic_info.csv"), sep = ",", row.names = F)
 
 #additionality time series
 additionality_estimates = lapply(additionality_out, function(x) x$additionality_estimates)
 names(additionality_estimates) = projects
 saveRDS(additionality_estimates, paste0(out_path, "_additionality_estimates.rds"))
+#additionality_estimates = read_rds(paste0(out_path, "_additionality_estimates.rds"))
+
+#deforestation rates
+cpcc_list = lapply(additionality_out, function(x) x$cpcc)
+names(cpcc_list) = projects
+saveRDS(cpcc_list, paste0(out_path, "_cpcc_list.rds"))
+#cpcc_list = read_rds(paste0(out_path, "_cpcc_list.rds"))
+
+lucc_list = lapply(additionality_out, function(x) x$lucc)
+names(lucc_list) = projects
+saveRDS(lucc_list, paste0(out_path, "_lucc_list.rds"))
+#lucc_list = read_rds(paste0(out_path, "_lucc_list.rds"))
+
+vicinity_list = lapply(additionality_out, function(x) x$vicinity)
+names(vicinity_list) = projects
+saveRDS(vicinity_list, paste0(out_path, "_vicinity_list.rds"))
+#vicinity_list = read_rds(paste0(out_path, "_vicinity_list.rds"))
+
+
+# Compare CPC- and LUC- based deforestation rates ----
+cpcc_lucc_list = lapply(seq_along(projects), function(i) {
+  cpcc = cpcc_list[[i]]
+  lucc = lucc_list[[i]]
+  t0 = project_var$t0[i]
+  luc_t_10 = paste0("luc_", t0 - 10)
+  luc_t0 = paste0("luc_", t0)
+  vicinity = vicinity_list[[i]] %>% mutate(transition_10_0 = paste(.data[[luc_t_10]], .data[[luc_t0]], sep = "_"))
+
+  #pre-project CPC change of project and matched pixels (in each year in each pair)
+  project_cpc = subset(cpcc, treatment == "treatment") %>% pull(defor_10_0) %>% fillNA()
+  counterfactual_cpc = subset(cpcc, treatment == "control") %>% pull(defor_10_0) %>% fillNA()
+
+  #pre-project CPC change of project vicinity (in each pixel)
+  vicinity_cpc = (vicinity$cpc10_u - vicinity$cpc0_u) / 10
+
+  #pre-project LUC change of project and matched pixels (in each year in each pair)
+  project_luc = subset(lucc, treatment == "treatment" & !started) %>% pull(prop_df) %>% fillNA()
+  counterfactual_luc = subset(lucc, treatment == "control" & !started) %>% pull(prop_df) %>% fillNA()
+
+  #pre-project LUC change of project vicinity
+  vicinity_luc = sum(vicinity$transition_10_0 %in% c("1_2", "1_3", "1_4")) / nrow(vicinity)
+  subsamp_size = nrow(cpcc) / (2 * 100)
+  vicinity_luc = rep(NA, 100)
+  for(i in 1:100) {
+    vicinity_luc[i] = sum(slice_sample(vicinity, n = subsamp_size)$transition_10_0 %in% c("1_2", "1_3", "1_4")) / subsamp_size
+  }
+
+  #during-project LUC change of project and matched pixels (in each year in each pair)
+  post_t0_project_luc = subset(lucc, treatment == "treatment" & started) %>% pull(prop_df) %>% fillNA()
+  post_t0_counterfactual_luc = subset(lucc, treatment == "control" & started) %>% pull(prop_df) %>% fillNA()
+
+  cpcc_lucc_df = do.call(rbind,
+    list(data.frame(Type = "CPC", Period = "Pre-t0", var = "project_cpc", val = project_cpc),
+         data.frame(Type = "CPC", Period = "Pre-t0", var = "counterfactual_cpc", val = counterfactual_cpc),
+         data.frame(Type = "CPC", Period = "Pre-t0", var = "vicinity_cpc", val = vicinity_cpc),
+         data.frame(Type = "LUC", Period = "Pre-t0", var = "project_luc", val = project_luc),
+         data.frame(Type = "LUC", Period = "Pre-t0", var = "counterfactual_luc", val = counterfactual_luc),
+         data.frame(Type = "LUC", Period = "Pre-t0", var = "vicinity_luc", val = vicinity_luc),
+         data.frame(Type = "LUC", Period = "Post-t0", var = "post_t0_project_luc", val = post_t0_project_luc),
+         data.frame(Type = "LUC", Period = "Post-t0", var = "post_t0_counterfactual_luc", val = post_t0_counterfactual_luc)))
+  cpcc_lucc_df$Type = factor(cpcc_lucc_df$Type, levels = c("CPC", "LUC"))
+  cpcc_lucc_df$Period = factor(cpcc_lucc_df$Period, levels = c("Pre-t0", "Post-t0"))
+  cpcc_lucc_df$var = factor(cpcc_lucc_df$var, levels = c("project_cpc", "counterfactual_cpc", "vicinity_cpc",
+                                                         "project_luc", "counterfactual_luc", "vicinity_luc",
+                                                         "post_t0_project_luc", "post_t0_counterfactual_luc"))
+
+  cpcc_lucc_summary = cpcc_lucc_df %>%
+    group_by(var) %>%
+    reframe(min = min(val, na.rm = T),
+            q1 = quantile(val, 0.25, na.rm = T),
+            median = median(val, na.rm = T),
+            mean = mean(val, na.rm = T),
+            q3 = quantile(val, 0.75, na.rm = T),
+            max = max(val, na.rm = T))
+
+  return(list(cpcc_lucc_df = cpcc_lucc_df, cpcc_lucc_summary = cpcc_lucc_summary))
+})
+
+cpcc_lucc_summary_list = lapply(cpcc_lucc_list, function(x) x$cpcc_lucc_summary)
+names(cpcc_lucc_summary_list) = projects
+saveRDS(cpcc_lucc_summary_list, paste0(out_path, "_cpcc_lucc_summary.rds"))
+
+for(i in seq_along(cpcc_lucc_summary_list)) {
+  write.csv(cpcc_lucc_summary_list[[i]] %>% mutate(project = projects[i]),
+            paste0("/maps/epr26/tmf_pipe_out/out_", out_prefix, "_cpcc_lucc_summ_", i, ".csv"))
+}
 
 #CPC-based and LUC-based deforestation rates
-plot_cpcc_lucc = lapply(additionality_out, function(x) x$plot_cpcc_lucc) %>%
-  ggpubr::ggarrange(plotlist = ., ncol = 3, nrow = 3, common.legend = T, legend = "bottom")
-ggsave(paste0(out_path, "_cpcc_lucc.png"), plot_cpcc_lucc, width = 6000, height = 3000, units = "px", bg = "white")
+cpcc_lucc_max = sapply(cpcc_lucc_list, function(x) range(x$cpcc_lucc_df$val * 100)) %>% max()
+plot_cpcc_lucc = lapply(seq_along(cpcc_lucc_list), function(i) {
+  ggplot(data = cpcc_lucc_list[[i]]$cpcc_lucc_df, aes(x = var, y = val * 100)) +
+    geom_boxplot(aes(color = Type, linetype = Period)) +
+    scale_x_discrete(labels = c("Project-CPC", "Counterfactual-CPC", "Vicinity-CPC",
+                                "Project-LUC", "Counterfactual-LUC", "Vicinity-LUC",
+                                "Post-t0 project-LUC", "Post-t0 counterfactual-LUC")) +
+    scale_y_sqrt(limits = c(0, ceiling(cpcc_lucc_max * 2) / 2)) +
+    scale_color_manual(values = c("red", "blue")) +
+    scale_linetype_manual(values = 1:2) +
+    labs(title = projects[i], x = NULL, y = "Annual forest loss (%)\n(square root transformed)") +
+    theme_bw() +
+    theme(title = element_text(size = 24),
+          axis.title = element_text(size = 20),
+          axis.text.x = element_text(size = 18, angle = 90),
+          axis.text.y = element_text(size = 18),
+          legend.title = element_text(size = 24),
+          legend.text = element_text(size = 20))
+}) %>%
+  ggpubr::ggarrange(plotlist = ., ncol = 4, nrow = 2, common.legend = T, legend = "bottom")
+SaveMultiPagePlot(plot_cpcc_lucc, "cpcc_lucc", width = 6000, height = 6000)
 
-
-cpcc_lucc_summary = lapply(additionality_out, function(x) x$cpcc_lucc_summ)
-names(cpcc_lucc_summary) = projects
-saveRDS(cpcc_lucc_summary, paste0(out_path, "_cpcc_lucc_summary.rds"))
-for(i in seq_along(cpcc_lucc_summary)) {
-  write.csv(cpcc_lucc_summary[[i]], paste0("/maps/epr26/tmf_pipe_out/out_", out_prefix, "_cpcc_lucc_summ_", i, ".csv"))
-}
+ggsave(paste0(out_path, "cpcc_lucc"), plot_cpcc_lucc, width = 6000, height = 6000, units = "px", bg = "white")
+#  ggsave("cpcc_lucc_summ.png", width = 1000, height = 1000, units = "px")
 
 
 # Run function for ex ante analysis ----
-
 ex_ante_out = lapply(seq_along(projects), function(i) {
   proj_id = projects[i]
   area_ha = project_var$area_ha[i]
   if(is.null(additionality_estimates[[i]])) {
-    return(list(vicinity_area = NA, plot_df = NULL, forecast_df = NULL,
+    return(list(plot_df = NULL, forecast_df = NULL,
                 p0 = NULL, p1 = NULL, p2 = NULL, p_legend_grob = NULL, p_perc = NULL, p_overcredit = NULL))
   }
 
@@ -342,7 +428,9 @@ ex_ante_out = lapply(seq_along(projects), function(i) {
           "grid" = paste0(project_dir, proj_id, "/1201_", proj_id),
           "control" = paste0(project_dir, proj_id, "/0000_", proj_id))
 
-  CalcExAnte(proj_id = proj_id, area_ha = area_ha, obs_val = obs_val, path = path, forecast = forecast)
+  acd = read.csv(paste0(path, "carbon-density.csv"))
+
+  PlotExAnte(proj_id = proj_id, area_ha = area_ha, obs_val = obs_val, path = path, acd = acd, forecast = forecast)
 })
 names(ex_ante_out) = projects
 
@@ -357,41 +445,23 @@ names(ex_ante_forecast_df) = projects
 write_rds(ex_ante_plot_df, paste0(out_path, "_ex_ante_plot_df.rds"))
 write_rds(ex_ante_forecast_df, paste0(out_path, "_ex_ante_forecast_df.rds"))
 
-#basic information
-basic_df = project_var %>%
-  dplyr::select(t0, country, area_ha, project) %>%
-  filter(project %in% paste0("0000_", projects)) %>%
-  mutate(vicinity_area = sapply(ex_ante_out, function(x) x$vicinity_area))
-write.table(basic_df, paste0(out_path, "_basic_info.csv"), sep = ",", row.names = F)
-
 #summary statistics of observed values
 obs_c_loss_summ = lapply(ex_ante_out, function(x) {
   if(is.null(x$plot_df)) return(NA)
-   summary(filter(x$plot_df, Type == "obs_c_loss")$Value, na.rm = T)
+  quantile(filter(x$plot_df, Type == "obs_c_loss")$Value, c(0.05, 0.1, 0.25, 0.5, 0.75), na.rm = T)
 }) %>% do.call(rbind, .)
 rownames(obs_c_loss_summ) = projects
 write.table(obs_c_loss_summ, paste0(out_path, "_obs_c_loss.csv"), sep = ",", row.names = F)
 
 obs_add_summ = lapply(ex_ante_out, function(x) {
   if(is.null(x$plot_df)) return(NA)
-   summary(filter(x$plot_df, Type == "obs_add")$Value, na.rm = T)
+  quantile(filter(x$plot_df, Type == "obs_add")$Value, c(0.05, 0.1, 0.25, 0.5, 0.75), na.rm = T)
 }) %>% do.call(rbind, .)
 rownames(obs_add_summ) = projects
 write.table(obs_add_summ, paste0(out_path, "_obs_add.csv"), sep = ",", row.names = F)
 
-#functions for multi-page plots
-SaveMultiPagePlot = function(plots, suffix) {
-  if(class(plots)[1] == "list") {
-    lapply(seq_along(plots), function(i) {
-      ggsave(paste0(out_path, "_", suffix, "_", i, ".png"), plots[[i]],
-             width = 5000, height = 3000, units = "px", bg = "white")
-    })
-  } else {
-    ggsave(paste0(out_path, "_", suffix, ".png"), plots,
-           width = 5000, height = 3000, units = "px", bg = "white")
-  }
-}
 
+# Make ex ante plots ----
 #plot of different baseline periods
 x_max = sapply(ex_ante_out, function(x) {
   if(is.null(x$plot_df)) return(NA)
@@ -415,17 +485,18 @@ x_range = sapply(ex_ante_out, function(x) {
     pull(Value) %>%
     range()
 }) %>% unlist()
+x_legend = ex_ante_out[[1]]$p_legend_grob
 plot_distr = lapply(seq_along(ex_ante_out), function(i) {
   x = ex_ante_out[[i]]
   if(is.null(x$p1)) return(NULL)
   x1 = x$p1 + ggtitle("") + scale_x_continuous(limits = c(min(x_range, na.rm = T), max(x_range, na.rm = T)))
   x2 = x$p2 + ggtitle("") + scale_x_continuous(limits = c(min(x_range, na.rm = T), max(x_range, na.rm = T)))
-  x_legend = x$p_legend_grob
-  p_1_2 = ggpubr::ggarrange(x1, x2, ncol = 2, nrow = 1, common.legend = T, legend = "bottom", legend.grob = x_legend)
+  p_1_2 = ggpubr::ggarrange(x1, x2, ncol = 2, nrow = 1, legend = "none")
   ggpubr::annotate_figure(p_1_2, top = ggpubr::text_grob(projects[i], face = "bold", size = 14))
-}) %>%
-  ggpubr::ggarrange(plotlist = ., ncol = 3, nrow = 3, common.legend = T, legend = "bottom")
-SaveMultiPagePlot(plot_distr, "distribution")
+})
+plot_distr_all = plot_distr %>%
+  ggpubr::ggarrange(plotlist = ., ncol = 3, nrow = 3, common.legend = T, legend = "bottom", legend.grob = x_legend)
+SaveMultiPagePlot(plot_distr_all, "distribution", width = 4000, height = 4000)
 
 #plot of forecast and overcrediting risk
 plot_forecast = lapply(seq_along(ex_ante_out), function(i) {

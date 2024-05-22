@@ -1,13 +1,8 @@
 RetrievePoints = function(matched_path, matchless_path, k, matches, t0) {
-    k = k %>% dplyr::select(c("lat", "lng", "ecoregion"))
-    matches = matches %>% dplyr::select(c("lat", "lng", "ecoregion"))
-
     pairs = read_parquet(matched_path) %>%
         dplyr::left_join(., k, by = join_by(k_lat == lat, k_lng == lng)) %>%
-        rename(k_ecoregion = ecoregion) %>%
-        dplyr::left_join(., matches, by = join_by(s_lat == lat, s_lng == lng)) %>%
-        rename(s_ecoregion = ecoregion) %>%
-        mutate(s_id = 1:n(), k_id = 1:n())
+        dplyr::left_join(., matches, by = join_by(s_lat == lat, s_lng == lng))
+#        mutate(s_id = 1:n(), k_id = 1:n())
 
     unmatched_pairs = read_parquet(matchless_path)
 
@@ -23,11 +18,8 @@ RetrievePoints = function(matched_path, matchless_path, k, matches, t0) {
         mutate(treatment = "treatment") %>%
         tmfemi_reformat(t0 = t0)
 
-    exp_n_pairs = nrow(treat) + nrow(unmatched_pairs)
-
-    pts_matched = rbind(treat, control)
-
-    return(list(exp_n_pairs = exp_n_pairs, pts_matched = pts_matched))
+    return(list(exp_n_pairs = nrow(treat) + nrow(unmatched_pairs),
+                pts_matched = rbind(treat, control)))
 }
 
 ProcessPairs = function(matched_path, matchless_path, k, matches, t0, area_ha, acd, pair_id) { #loop through all sampled pairs
@@ -36,12 +28,12 @@ ProcessPairs = function(matched_path, matchless_path, k, matches, t0, area_ha, a
     points = RetrievePoints(matched_path, matchless_path, k, matches, t0)
     exp_n_pairs = points$exp_n_pairs
     pts_matched = points$pts_matched %>%
-        mutate(defor_5_0 = (cpc5_u - cpc0_u) / 5, defor_10_5 = (cpc10_u - cpc5_u) / 5, defor_10_0 = (cpc10_u - cpc0_u) / 10)
-
+      mutate(defor_5_0 = (cpc5_u - cpc0_u) / 5,
+             defor_10_5 = (cpc10_u - cpc5_u) / 5,
+             defor_10_0 = (cpc10_u - cpc0_u) / 10)
 
     #project pixel and matched pixel's pre-project CPC change
-    cpcc = list(treatment = pts_matched %>% filter(treatment == "treatment") %>% pull(defor_10_0),
-                control = pts_matched %>% filter(treatment == "control") %>% pull(defor_10_0))
+    cpcc = pts_matched %>% dplyr::select(c("treatment", "defor_10_0")) %>% st_drop_geometry()
 
     # Pair-level independent variables: median of all pixels in each pair (control + treat), then min/median/max across 100 pairs
     # elevation, slope, accessibility, cpc0/5/10_u, cpc0/5/10_d, defor_5_0 = cpc5_u - cpc0_u, defor_10_5 = cpc10_u - cpc5_u
@@ -70,17 +62,14 @@ ProcessPairs = function(matched_path, matchless_path, k, matches, t0, area_ha, a
                                       verbose = F)
 
     #project pixel and matched pixel's pre-project and during-project LUC change
-    luc_diff = luc_series$series %>%
+    lucc = luc_series$series %>%
         group_by(treatment, class) %>%
         reframe(year = year[-1],
                 prop_df = -diff(class_prop)) %>%
         ungroup() %>%
-        mutate(started = (year > t0))
-
-    lucc = list(treatment_pre = luc_diff %>% filter(treatment == "treatment" & !started & class == "1") %>% pull(prop_df),
-                control_pre = luc_diff %>% filter(treatment == "control" & !started & class == "1") %>% pull(prop_df),
-                treatment_during = luc_diff %>% filter(treatment == "treatment" & started & class == "1") %>% pull(prop_df),
-                control_during = luc_diff %>% filter(treatment == "control" & started & class == "1") %>% pull(prop_df))
+        mutate(started = (year > t0)) %>%
+        filter(class == "1") %>%
+        dplyr::select(c("treatment", "prop_df", "started"))
 
     #calculate annual carbon stock (Mg)
     carbon_series = luc_series$series %>%

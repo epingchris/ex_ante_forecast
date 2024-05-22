@@ -1,12 +1,9 @@
-CalcExAnte = function(proj_id, area_ha, obs_val, path, acd_fixed = NULL, forecast = F) {
+PlotExAnte = function(proj_id, area_ha, obs_val, path, acd, forecast = F) {
   c = Sys.time()
 
   #load ACD and vicinitiy (potentially matched points) data
-  if(is.null(acd_fixed)) acd = read.csv(paste0(path, "carbon-density.csv"))
-  matches = read_parquet(paste0(path, "matches.parquet"))
-
-  #sample down to around the smallest vicinity size of the 15 projects (2559309)
-  matches = matches %>% slice_sample(n = 2500000)
+  matches = read_parquet(paste0(path, "matches.parquet")) %>%
+    slice_sample(n = 2500000) #sample down to around the smallest vicinity size of the 15 projects (2559309)
 
   #find carbon loss associated with LUC change undisturbed -> deforested (MgC / ha)
   #exit if not available for classes 1 and 3
@@ -26,7 +23,6 @@ CalcExAnte = function(proj_id, area_ha, obs_val, path, acd_fixed = NULL, forecas
   #calculate pre-project vicinity baseline deforestation and C loss
   if(length(acd_change) == 0) {
     plot_df = matches %>%
-      #convert from change in proportion of 30x30m2 pixels to change in MgC/ha
       mutate(defor_5_0 = (cpc5_u - cpc0_u) / 5,
              defor_10_5 = (cpc10_u - cpc5_u) / 5,
              defor_10_0 = (cpc10_u - cpc0_u) / 10) %>%
@@ -36,10 +32,10 @@ CalcExAnte = function(proj_id, area_ha, obs_val, path, acd_fixed = NULL, forecas
       mutate(Type = "baseline_deforestation")
   } else {
     plot_df = matches %>%
-      #convert from change in proportion of 30x30m2 pixels to change in MgC/ha
       mutate(defor_5_0 = (cpc5_u - cpc0_u) / 5,
-           defor_10_5 = (cpc10_u - cpc5_u) / 5,
-           defor_10_0 = (cpc10_u - cpc0_u) / 10) %>%
+             defor_10_5 = (cpc10_u - cpc5_u) / 5,
+             defor_10_0 = (cpc10_u - cpc0_u) / 10) %>%
+      #convert from change in proportion of 30x30m2 pixels to change in MgC/ha
       mutate(carbon_loss_5_0 = acd_change * defor_5_0,
            carbon_loss_10_5 = acd_change * defor_10_5,
            carbon_loss_10_0 = acd_change * defor_10_0) %>%
@@ -79,12 +75,12 @@ CalcExAnte = function(proj_id, area_ha, obs_val, path, acd_fixed = NULL, forecas
     if(!forecast) {
       #add during-project observed values
       plot_df = plot_df %>% 
-      rbind(., data.frame(Value = obs_val$c_loss,
-                          Period = "after",
-                          Type = "obs_c_loss")) %>% #Observed counterfactual carbon loss (MgC/ha)
-      rbind(., data.frame(Value = obs_val$additionality,
-                          Period = "after",
-                          Type = "obs_add")) #Observed additionality (MgC/ha)
+        rbind(., data.frame(Value = obs_val$c_loss,
+                            Period = "after",
+                            Type = "obs_c_loss")) %>% #Observed counterfactual carbon loss (MgC/ha)
+        rbind(., data.frame(Value = obs_val$additionality,
+                            Period = "after",
+                            Type = "obs_add")) #Observed additionality (MgC/ha)
 
       p_legend = ggplot(data = filter(plot_df, Period == "carbon_loss_10_0" | str_detect(Type, "obs")), aes(Value, after_stat(density))) +
         geom_freqpoly(aes(color = Type, linetype = Type)) +
