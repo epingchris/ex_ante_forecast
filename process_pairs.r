@@ -1,3 +1,7 @@
+
+
+
+
 # set out a table of parameters you want to change
 # read the config
 # write the config with the parameters
@@ -63,7 +67,7 @@ match_classes = c(1, 3)
 #output: projects, pair_dirs, acd_dir
 analysis_type = "full" #"old_source", "full", "grid", "ac", "control"
 forecast = (analysis_type == "ac")
-stratified = F #stratify project pixels by accessibility
+stratified = T #stratify project pixels by accessibility
 pr_vec = seq(0.01, 0.99, by = 0.01) #different quantiles of baseline carbon loss to test
 
 if(analysis_type == "old_source") {
@@ -142,6 +146,10 @@ out_path = paste0("/maps/epr26/tmf_pipe_out/out_", out_prefix)
 
 # Loop through all projects ----
 #additionality_out = mclapply(seq_along(projects), mc.cores = 7, function(i) { #mclapply() does not work on Windows
+k_elevation_plot = vector("list", length(projects))
+k_slope_plot = vector("list", length(projects))
+k_access_plot = vector("list", length(projects))
+
 additionality_out = lapply(seq_along(projects), function(i) { #mclapply() does not work on Windows
   a = Sys.time()
 
@@ -186,7 +194,7 @@ additionality_out = lapply(seq_along(projects), function(i) { #mclapply() does n
     st_transform(4326) %>%
     st_area_ha() #area in hectares
 
-  #get ACD and biome variables
+  #get biome variables and project vicinity
   file_prefix = paste0(project_dir, proj_id, "/",
                        switch(analysis_type,
                               "full" = "",
@@ -194,25 +202,78 @@ additionality_out = lapply(seq_along(projects), function(i) { #mclapply() does n
                               "control" = "0000_",
                               "ac" = ""),
                        proj_id)
-  acd = read.csv(paste0(file_prefix, "carbon-density.csv"))
 
   k = read_parquet(paste0(file_prefix, "k.parquet")) %>%
-      dplyr::select(c("lat", "lng", "ecoregion")) %>%
-      rename(k_ecoregion = ecoregion) #for biome of project pixels
-  matches = read_parquet(paste0(file_prefix, "matches.parquet")) %>%
-      dplyr::select(c("lat", "lng", "ecoregion", paste0("luc_", t0 - 10), paste0("luc_", t0), "cpc10_u", "cpc0_u")) %>%
-      mutate(defor_10_0 = (cpc10_u - cpc0_u) / 10) %>%
-      rename(s_ecoregion = ecoregion) #for biome of matched pixels
-  vicinity_area = nrow(matches) * 900 / 10000 #convert from numbers of 30x30m2 pixels to hectares
-  vicinity = matches[sample(nrow(matches), 2500000), ] %>% #sub-sample project vicinity down to around the smallest vicinity size of the 15 projects (2559309)
-    dplyr::select(c("cpc10_u", "cpc0_u", luc_t_10, luc_t0))
+    dplyr::select(c("lat", "lng", "ecoregion", "elevation", "slope", "access", luc_t_10, luc_t0)) %>%
+    mutate(lucc = paste(.data[[luc_t_10]], .data[[luc_t0]], sep = "_"),
+           defor = ifelse(lucc %in% c("1_2", "1_3", "1_4"), 1, 0)) %>%
+    rename(k_ecoregion = ecoregion) #for biome of project pixels
+  logit_k = glm(defor ~ elevation + slope + access, data = k, family = "binomial")
+  summary(logit_k)
+  confint(logit_k)
+  logit_k_coef = summary(logit_k)$coefficients
 
-  #get ACD of undisturbed forest, gather project-level variables
-  acd_1 = filter(acd, land.use.class == 1)$carbon.density
-  acd_3 = filter(acd, land.use.class == 3)$carbon.density
-  acd_change = acd_1 - acd_3
-  if(length(acd_1) == 0) acd_1 = NA
-  if(length(acd_change) == 0) acd_change = NA
+  if(logit_k_coef["elevation", "Pr(>|z|)"] < 0.05) {
+    k_pred = data.frame(elevation = seq(min(k$elevation), max(k$elevation), len = 10000),
+                        slope = mean(k$slope),
+                        access = mean(k$access)) %>%
+      mutate(defor = predict(logit_k, newdata = ., type = "response"))
+    thres = k_pred$elevation[which(k_pred$defor < 0.01)[1]]
+
+  k_elevation_plot[[i]] = ggplot(data = k_pred, aes(x = elevation, y = defor)) +
+    geom_line() +
+    geom_point(data = k, aes(x = elevation, y = defor * max(k_pred$defor))) +
+    geom_hline(yintercept = 0.01, linetype = 3) +
+    geom_vline(xintercept = thres, color = "red") +
+    theme_bw() +
+    theme(panel.grid = element_blank())
+  }
+  if(logit_k_coef["slope", "Pr(>|z|)"] < 0.05) {
+    k_pred = data.frame(elevation = mean(k$elevation),
+                        slope = seq(min(k$slope), max(k$slope), len = 10000),
+                        access = mean(k$access)) %>%
+      mutate(defor = predict(logit_k, newdata = ., type = "response"))
+    thres = k_pred$slope[which(k_pred$defor < 0.01)[1]]
+
+  k_slope_plot[[i]] = ggplot(data = k_pred, aes(x = slope, y = defor)) +
+    geom_line() +
+    geom_point(data = k, aes(x = slope, y = defor * max(k_pred$defor))) +
+    geom_hline(yintercept = 0.01, linetype = 3) +
+    geom_vline(xintercept = thres, color = "red") +
+    theme_bw() +
+    theme(panel.grid = element_blank())
+  }
+  if(logit_k_coef["access", "Pr(>|z|)"] < 0.05) {
+    k_pred = data.frame(elevation = mean(k$elevation),
+                        slope = mean(k$slope),
+                        access = seq(min(k$access), max(k$access), len = 10000)) %>%
+      mutate(defor = predict(logit_k, newdata = ., type = "response"))
+    thres = k_pred$access[which(k_pred$defor < 0.01)[1]]
+
+  k_access_plot[[i]] = ggplot(data = k_pred, aes(x = access, y = defor)) +
+    geom_line() +
+    geom_point(data = k, aes(x = access, y = defor * max(k_pred$defor))) +
+    geom_hline(yintercept = 0.01, linetype = 3) +
+    geom_vline(xintercept = thres, color = "red") +
+    theme_bw() +
+    theme(panel.grid = element_blank())
+  }
+
+#1 / (1 + exp(-(logit_k_coef[1, 1] + logit_k_coef[2, 1] * 242.6669 + logit_k_coef[3, 1] * 6.0885 + logit_k_coef[4, 1] * 22)))
+
+  matches = read_parquet(paste0(file_prefix, "matches.parquet"))
+  vicinity_area = nrow(matches) * 900 / 10000 #convert from numbers of 30x30m2 pixels to hectares
+  matches = matches %>%
+    dplyr::select(c("lat", "lng", "ecoregion", "elevation", "slope", "access", luc_t_10, luc_t0)) %>%
+    mutate(lucc_10_0 = paste(.data[[luc_t_10]], .data[[luc_t0]], sep = "_"),
+           defor_10_0 = ifelse(lucc_10_0 %in% c("1_2", "1_3", "1_4"), 1, 0)) %>%
+    rename(s_ecoregion = ecoregion) #for biome of matched pixels
+  vicinity = matches[sample(nrow(matches), 2500000), ] %>% #sub-sample project vicinity down to around the smallest vicinity size of the 15 projects (2559309)
+    dplyr::select(c(luc_t_10, luc_t0, "access"))
+
+  #get ACD of undisturbed forest
+  acd = read.csv(paste0(file_prefix, "carbon-density.csv"))
+  acd_1 = filter(acd, land.use.class == 1)$carbon.density %>% fillNA()
 
   #gather common project-level variables
   project_var = data.frame(t0 = t0, country = country, acd_1 = acd_1, area_ha = area_ha, vicinity_area = vicinity_area, project = proj_name)
@@ -226,31 +287,36 @@ additionality_out = lapply(seq_along(projects), function(i) { #mclapply() does n
   #exit if no matches
   if(length(matched_paths) == 0) return(list(project_var = project_var, additionality_estimates = NULL))
 
+  #loop through all sampled pairs, get matched points and additionality series in each pair
+  pairs_out = lapply(seq_along(matched_paths), function(j) {
+    ProcessPairs(matched_path = matched_paths[j], matchless_path = matchless_paths[j],
+                  k = k, matches = matches %>% dplyr::select(c("lat", "lng", "s_ecoregion")),
+                  t0 = t0, area_ha = area_ha, acd = acd, pair_id = j)
+  })
+
+  #stratify by accessibility
   if(stratified) {
-    #loop through all sampled pairs and only extract points for stratification
-    pairs_out = lapply(seq_along(matched_paths), function(j) {
-      RetrievePoints(matched_path = matched_paths[j], matchless_path = matchless_paths[j],
-                     k = k, matches = matches %>% dplyr::select(c("lat", "lng", "s_ecoregion")), t0 = t0)
-    })
-
-    exp_n_pairs_out = lapply(pairs_out, function(x) x$exp_n_pairs)
-    points_out = lapply(pairs_out, function(x) x$pts_matched)
-
-    points_out_df = points_out %>% do.call(dplyr::bind_rows, .)
-  } else {
-    #loop through all sampled pairs and get additionality series in each pair
-    pairs_out = lapply(seq_along(matched_paths), function(j) {
-      ProcessPairs(matched_path = matched_paths[j], matchless_path = matchless_paths[j],
-                   k = k, matches = matches %>% dplyr::select(c("lat", "lng", "s_ecoregion")),
-                   t0 = t0, area_ha = area_ha, acd = acd, pair_id = j)
-    })
+    pts_matched = lapply(pairs_out, function(x) x$pts_matched) %>%
+      do.call(dplyr::bind_rows, .) %>%
+      mutate(transition_10_0 = paste(.data[[paste0("JRC", t0 - 10)]], .data[[paste0("JRC", t0)]], sep = "_"))
+    access_breaks = c(0, quantile(c(vicinity$access, pts_matched$accessibility), seq(0.1, 1, by = 0.1)))
+    vicinity$access_class = cut(vicinity$access, breaks = access_breaks, labels = 1:10, include.highest = T, right = T)
+    pts_matched$access_class = cut(pts_matched$accessibility, breaks = access_breaks, labels = 1:10, include.highest = T, right = T)
   }
 
-  cpcc = lapply(pairs_out, function(x) x$cpcc) %>% do.call(dplyr::bind_rows, .) #use bind_rows() for speed
+  #project pixel and matched pixel's pre-project CPC change
+  cpcc = lapply(pairs_out, function(x) {
+    x$pts_matched %>%
+      dplyr::select(c("treatment", "defor_10_0")) %>%
+      st_drop_geometry()
+  }) %>%
+    do.call(dplyr::bind_rows, .) #use bind_rows() for speed
+
+  #project pixel and matched pixel's pre-project and during-project LUC change
   lucc = lapply(pairs_out, function(x) x$lucc) %>% do.call(dplyr::bind_rows, .)
 
   #combine pair-level variables and project-level variables
-  pair_biome = lapply(pairs_out, function(x) x$biome) %>%
+  pair_biome = lapply(pairs_out, function(x) x$pts_matched$biome) %>%
     unlist() %>%
     table() %>%
     which.max() %>%
@@ -274,11 +340,69 @@ additionality_out = lapply(seq_along(projects), function(i) { #mclapply() does n
 
   b = Sys.time()
   cat(proj_id, ":", b - a, "\n")
-  return(list(project_var = project_var, additionality_estimates = additionality_estimates,
-              cpcc = cpcc, lucc = lucc, vicinity = vicinity))
+  if(stratified) {
+    return(list(project_var = project_var, additionality_estimates = additionality_estimates,
+                cpcc = cpcc, lucc = lucc, vicinity = vicinity, pts_matched = pts_matched))
+  } else {
+    return(list(project_var = project_var, additionality_estimates = additionality_estimates,
+            cpcc = cpcc, lucc = lucc, vicinity = vicinity))
+  }
 })
 names(additionality_out) = projects
 
+
+# Stratified analysis ----
+plot_stratified = lapply(seq_along(projects), function(i) {
+  pts_matched = additionality_out[[i]]$pts_matched %>%
+    dplyr::select(c("defor_10_0", "transition_10_0", "accessibility", "access_class")) %>%
+    st_drop_geometry()
+  vicinity = additionality_out[[i]]$vicinity %>%
+    mutate(defor_10_0 = (cpc10_u - cpc0_u) / 10) %>%
+    dplyr::select(c("defor_10_0", "transition_10_0", "access", "access_class"))
+
+  counterfactual_luc = data.frame(
+    access_class = 1:10,
+    lucc = tapply(pts_matched$transition_10_0, pts_matched$access_class, findLUCC),
+    source = "Counterfactual"
+  )
+
+
+# lucc = rep(NA, 10)
+# for(i in 1:10) {
+#   a = Sys.time()
+#   lucc = boot(data = pts_matched, statistic = function(x) findLUCC(subset(x, access_class == i)$transition_10_0), R = 100)
+#   b = Sys.time()
+#   b - a
+# }
+
+
+  vicinity_luc = data.frame(
+    access_class = 1:10,
+    lucc = tapply(vicinity$transition_10_0, vicinity$access_class, findLUCC),
+    source = "Vicinity"
+  )
+
+  data_stratified = rbind(counterfactual_luc, vicinity_luc)
+
+  x_labels = paste0("(", seq(1, 91, by = 10), ", ", seq(10, 100, by = 10), "]")
+
+  p = ggplot(data = data_stratified, aes(x = access_class, y = lucc * 100, group = source)) +
+    geom_line(aes(color = source)) +
+    scale_x_continuous(limits = c(1, 10), breaks = 1:10, labels = x_labels) +
+    scale_y_continuous() +
+#    scale_y_sqrt() +
+    scale_color_manual(values = c("red", "blue")) +
+    labs(title = projects[i], x = "Accessibility class (percentile)", y = "Annual forest loss (%)\n(square root transformed)") +
+    theme_bw() +
+    theme(title = element_text(size = 24),
+          panel.grid.minor.x = element_blank(),
+          axis.text.x = element_text(angle = 90, hjust = 0.5),
+)
+
+  return(p)
+})
+
+ggpubr::ggarrange(plotlist = plot_stratified, ncol = 3, nrow = 5)
 
 # Save additionality outputs ----
 #project-level variables
@@ -335,11 +459,11 @@ cpcc_lucc_list = lapply(seq_along(projects), function(i) {
   counterfactual_luc = subset(lucc, treatment == "control" & !started) %>% pull(prop_df) %>% fillNA()
 
   #pre-project LUC change of project vicinity
-  vicinity_luc = sum(vicinity$transition_10_0 %in% c("1_2", "1_3", "1_4")) / nrow(vicinity)
+  vicinity_luc = findLUCC(vicinity$transition_10_0)
   subsamp_size = nrow(cpcc) / (2 * 100)
   vicinity_luc = rep(NA, 100)
   for(i in 1:100) {
-    vicinity_luc[i] = sum(slice_sample(vicinity, n = subsamp_size)$transition_10_0 %in% c("1_2", "1_3", "1_4")) / subsamp_size
+    vicinity_luc[i] = findLUCC(slice_sample(vicinity, n = subsamp_size)$transition_10_0)
   }
 
   #during-project LUC change of project and matched pixels (in each year in each pair)

@@ -30,10 +30,8 @@ ProcessPairs = function(matched_path, matchless_path, k, matches, t0, area_ha, a
     pts_matched = points$pts_matched %>%
       mutate(defor_5_0 = (cpc5_u - cpc0_u) / 5,
              defor_10_5 = (cpc10_u - cpc5_u) / 5,
-             defor_10_0 = (cpc10_u - cpc0_u) / 10)
-
-    #project pixel and matched pixel's pre-project CPC change
-    cpcc = pts_matched %>% dplyr::select(c("treatment", "defor_10_0")) %>% st_drop_geometry()
+             defor_10_0 = (cpc10_u - cpc0_u) / 10,
+             pair = pair_id)
 
     # Pair-level independent variables: median of all pixels in each pair (control + treat), then min/median/max across 100 pairs
     # elevation, slope, accessibility, cpc0/5/10_u, cpc0/5/10_d, defor_5_0 = cpc5_u - cpc0_u, defor_10_5 = cpc10_u - cpc5_u
@@ -52,8 +50,6 @@ ProcessPairs = function(matched_path, matchless_path, k, matches, t0, area_ha, a
                 defor_10_0 = median(defor_10_0)) %>%
         pivot_longer(cols = elevation:defor_10_0, names_to = "var", values_to = "val") %>%
         mutate(pair = pair_id)
-
-    pair_biome = pts_matched$biome
 
     #calculate annual proportion of each land use class
     luc_series = simulate_area_series(pts_matched,
@@ -87,5 +83,5 @@ ProcessPairs = function(matched_path, matchless_path, k, matches, t0, area_ha, a
         mutate(additionality = c_loss - t_loss, pair = pair_id)
     d = Sys.time()
     cat(pair_id, ":", d - c, "\n")
-    return(list(pair_var = pair_var, out_df = out_df, cpcc = cpcc, lucc = lucc, biome = pair_biome))
+    return(list(pair_var = pair_var, out_df = out_df, lucc = lucc, pts_matched = pts_matched, exp_n_pairs = exp_n_pairs))
 }

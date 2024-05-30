@@ -56,3 +56,6 @@ cat("These functions require ggplot2, dplyr and stars packages")
 
 #function to turn empty object as NA
 fillNA = function(x) if (length(x) == 0) return(NA) else return(x)
+
+#function to find LUC transitions from undisturbed to disturbed
+findLUCC = function(x) sum(x %in% c("1_2", "1_3", "1_4")) / length(x)
