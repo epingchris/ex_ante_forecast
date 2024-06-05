@@ -40,15 +40,21 @@ tmfemi_reformat <- function(df, t0) {
 }
 
 #functions for multi-page plots
-SaveMultiPagePlot = function(plots, suffix, width = 5000, height = 3000) {
-  if(class(plots)[1] == "list") {
-    lapply(seq_along(plots), function(i) {
-      ggsave(paste0(out_path, "_", suffix, "_", i, ".png"), plots[[i]],
+SaveMultiPagePlot = function(plotlist, suffix, n = 4, width = 4000, height = 4000) {
+  if(length(plotlist) > n ^ 2) {
+    plot_all = plotlist %>%
+      ggpubr::ggarrange(plotlist = ., ncol = n, nrow = n, common.legend = T, legend = "bottom")
+    lapply(seq_along(plot_all), function(i) {
+      ggsave(paste0(out_path, "_", suffix, "_", i, ".png"), plot_all[[i]],
              width = width, height = height, units = "px", bg = "white")
     })
   } else {
-    ggsave(paste0(out_path, "_", suffix, ".png"), plots,
-           width = width, height = height, units = "px", bg = "white")
+    plot_nrow = ceiling(length(plotlist) / n)
+    plot_all = plotlist %>%
+      ggpubr::ggarrange(plotlist = ., ncol = n, nrow = plot_nrow, common.legend = T, legend = "bottom")
+    height_adjusted = height * plot_nrow / n
+    ggsave(paste0(out_path, "_", suffix, ".png"), plot_all,
+           width = width, height = height_adjusted, units = "px", bg = "white")
   }
 }
 
