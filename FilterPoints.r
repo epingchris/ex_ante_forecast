@@ -40,9 +40,11 @@ FilterPoints = function(analysis_type, proj_id) { #mclapply() does not work on W
   #determine the effect labels based on p-values and coefficient signs
   coefficients = logit_k_coef[2:4, 1]
   pval = logit_k_coef[2:4, 4]
-  effect_labels = ifelse(pval < 0.05,
-                         ifelse(coefficients > 0, "Pos.", "Neg."),
-                         "N.S.") %>%
+  effect_labels = case_when(
+    pval < 0.05 & coefficients > 0 ~ "Pos.",
+    pval < 0.05 & coefficients < 0 ~ "Neg.",
+    pval >= 0.05 ~ "N.S."
+  ) %>%
     matrix(., nrow = 1, ncol = 3) %>%
     as.data.frame()
   colnames(effect_labels) = c("slope", "elevation", "access")
@@ -55,7 +57,7 @@ FilterPoints = function(analysis_type, proj_id) { #mclapply() does not work on W
     exclude_ratio = NA
     thres = NA
 
-    p = ggplot(data = k, aes_string(x = x, y = "defor")) +
+    p = ggplot(data = k, aes(x = .data[[x]], y = defor)) +
         geom_point(shape = "bullet", size = 1, color = "darkgray") +
         geom_hline(yintercept = 0.01, linetype = 2) +
         scale_y_continuous(limits = c(0, 1)) +
@@ -84,7 +86,7 @@ FilterPoints = function(analysis_type, proj_id) { #mclapply() does not work on W
                         "Pos." = k_pred[tail(which(k_pred$defor < 0.01), 1), x]) #set minimum threshold if effect is positive
       }
 
-      p = p + geom_line(data = k_pred, aes_string(x = x, y = "defor"))
+      p = p + geom_line(data = k_pred, aes(x = .data[[x]], y = defor))
       if(!is.na(thres)) p = p + geom_vline(xintercept = thres, color = "red")
     }
 
@@ -96,7 +98,7 @@ FilterPoints = function(analysis_type, proj_id) { #mclapply() does not work on W
   plotlist = lapply(out, function(x) x$p)
   names(plotlist) = c("slope", "elevation", "access")
 
-  return(list(logit_k = logit_k, coefficients = coefficients, pval = pval, effect_labels = effect_labels,
+  return(list(k = k, logit_k = logit_k, coefficients = coefficients, pval = pval, effect_labels = effect_labels,
               exclude_ratio = exclude_ratio, thres = thres, plotlist = plotlist))
 }
 
