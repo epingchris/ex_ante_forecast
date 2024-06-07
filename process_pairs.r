@@ -31,7 +31,7 @@ library(microbenchmark) #microbenchmark::microbenchmark
 # library(countrycode)
 
 source("functions.r") #cpc_rename, tmfemi_reformat
-source("FilterPoints.r")
+source("FilterVicinity.r")
 source("ProcessPairs.r") #RetrievePoints, ProcessPairs
 source("CalcExAnte.r")
 
@@ -65,7 +65,7 @@ match_classes = c(1, 3)
 # Load parameters ----
 #input: project_dir, exclude_id, acd_id
 #output: projects, pair_dirs, acd_dir
-analysis_type = "control" #"old_source", "full", "grid", "ac", "control"
+analysis_type = "ac" #"old_source", "full", "grid", "ac", "control"
 forecast = (analysis_type == "ac")
 stratified = T #stratify project pixels by accessibility
 pr_vec = seq(0.01, 0.99, by = 0.01) #different quantiles of baseline carbon loss to test
@@ -146,20 +146,21 @@ out_path = paste0("/maps/epr26/tmf_pipe_out/out_", out_prefix)
 
 
 # Find filtering thresholds ----
-filter_out = lapply(projects, function(x) FilterPoints(analysis_type = analysis_type, proj_id = x))
+by_source = "matches" #k, matches
+filter_out = lapply(projects, function(x) FilterVicinity(analysis_type = analysis_type, proj_id = x, by_source = by_source))
 
 effect_pval_df = lapply(filter_out, function(x) x$pval) %>% do.call(rbind, .) %>% signif(., 2)
-write.table(effect_pval_df, paste0(out_path, "_effect_pval.csv"), sep = ",", row.names = F)
+write.table(effect_pval_df, paste0(out_path, "_effect_pval_by_", by_source, ".csv"), sep = ",", row.names = F)
 effect_labels_df = lapply(filter_out, function(x) x$effect_labels) %>% do.call(rbind, .)
-write.table(effect_labels_df, paste0(out_path, "_effect_labels.csv"), sep = ",", row.names = F)
+write.table(effect_labels_df, paste0(out_path, "_effect_labels_by_", by_source, ".csv"), sep = ",", row.names = F)
 exclude_ratio_df = lapply(filter_out, function(x) x$exclude_ratio) %>% do.call(rbind, .)
-write.table(exclude_ratio_df %>% round(., 3), paste0(out_path, "_exclude_ratio.csv"), sep = ",", row.names = F)
+write.table(exclude_ratio_df %>% round(., 3), paste0(out_path, "_exclude_ratio_by_", by_source, ".csv"), sep = ",", row.names = F)
 thres_df = lapply(filter_out, function(x) x$thres) %>% do.call(rbind, .) %>% as.data.frame()
 var_vec = c("slope", "elevation", "access")
 colnames(thres_df) = var_vec
 thres_df$project = projects
 write.table(thres_df %>% mutate_at(var_vec, function(x) round(x, 1)),
-            paste0(out_path, "_thres.csv"), sep = ",", row.names = F)
+            paste0(out_path, "_thres_by_", by_source, ".csv"), sep = ",", row.names = F)
 
 n = switch(analysis_type,
            "full" = 4,
@@ -167,11 +168,84 @@ n = switch(analysis_type,
            "ac" = 3)
 
 vicinity_slope_plot = lapply(filter_out, function(x) x$plotlist$slope)
-SaveMultiPagePlot(vicinity_slope_plot, "vicinity_slope", n = n, width = 4000, height = 4000)
+SaveMultiPagePlot(vicinity_slope_plot, paste0("vicinity_slope_by_", by_source), n = n, width = 4000, height = 4000)
 vicinity_elev_plot = lapply(filter_out, function(x) x$plotlist$elevation)
-SaveMultiPagePlot(vicinity_elev_plot, "vicinity_elevation", n = n, width = 4000, height = 4000)
+SaveMultiPagePlot(vicinity_elev_plot, paste0("vicinity_elevation_by_", by_source), n = n, width = 4000, height = 4000)
 vicinity_access_plot = lapply(filter_out, function(x) x$plotlist$access)
-SaveMultiPagePlot(vicinity_access_plot, "vicinity_accessibility", n = n, width = 4000, height = 4000)
+SaveMultiPagePlot(vicinity_access_plot, paste0("vicinity_accessibility_by_", by_source), n = n, width = 4000, height = 4000)
+
+#project vicinity
+vicinity_list = lapply(filter_out, function(x) x$vicinity)
+names(vicinity_list) = projects
+saveRDS(vicinity_list, paste0(out_path, "vicinity_by_", by_source, ".rds"))
+#vicinity_list = read_rds(paste0(out_path, "_vicinity.rds"))
+
+#basic information about the vicinity
+vicinity_df = lapply(seq_along(projects), function(i) {
+  data.frame(project = projects[i],
+             vicinity_area = filter_out[[i]]$vicinity_area,
+             vicinity_area_filtered = filter_out[[i]]$vicinity_area_filtered,
+             exclusion_rate = 1 - (vicinity_area_filtered / vicinity_area))
+}) %>%
+  do.call(rbind, .)
+
+#calculate vicinity C loss before and after filtering
+meanCLoss = function(dat, ind) mean(dat[ind, ]$c_loss, na.rm = T)
+boot_n = 1000
+
+filter_diff_out = lapply(seq_along(projects), function(i) {
+  vicinity = vicinity_list[[i]]
+  baseline_c_loss = boot::boot(vicinity, meanCLoss, R = boot_n) #around 700 seconds
+
+  vicinity_filtered = subset(vicinity, !exclude)
+  if(nrow(vicinity_filtered) == 0) {
+    return(list(baseline_c_loss = baseline_c_loss, baseline_c_loss_filtered = NULL,
+                ses = NULL, plot_df = NULL, risk_overcrediting = NULL, risk_reversal = NULL))
+  }
+  baseline_c_loss_filtered = boot::boot(vicinity_filtered, meanCLoss, R = boot_n) #around 700 seconds
+
+  #collate data
+  baseline_val = data.frame(base_c_loss = as.vector(baseline_c_loss$t),
+                            base_c_loss_filt = as.vector(baseline_c_loss_filtered$t))
+
+  #calculate standardized effect size
+  ses = (mean(baseline_val$base_c_loss_filt) - mean(baseline_val$base_c_loss)) / sd(baseline_val$base_c_loss)
+
+  #long data for plotting
+  baseline_long = baseline_val %>%
+    pivot_longer(everything(), names_to = "Type", values_to = "Value") %>%
+    mutate(project = projects[i])
+
+  return(list(ses = ses, baseline_long = baseline_long))
+})
+saveRDS(filter_diff_out, paste0(out_path, "vicinity_filtering_by_", by_source, ".rds"))
+
+p_filter_df = lapply(filter_diff_out, function(x) x$baseline_long) %>%
+  do.call(rbind, .) %>%
+  mutate(project = factor(project, levels = projects))
+y_range = range(p_filter_df$Value)
+ses_plot_df = data.frame(project = projects, ses = sapply(filter_diff_out, function(x) x$ses)) %>%
+  mutate(ses_text = paste0("SES: ", round(ses, 2)))
+
+p_filter = ggplot(data = p_filter_df, aes(x = Type, y = Value)) +
+  geom_boxplot(aes(color = Type)) +
+  facet_wrap(vars(project), ncol = 5) +
+  ggpubr::stat_compare_means(method = "t.test", aes(label = ..p.signif..),
+                             label.x = 1.5, label.y = y_range[2] * 1.1, size = 5) +
+  geom_text(data = ses_plot_df,
+            mapping = aes(x = 1.5, y = y_range[2] * 1.2, label = ses_text), size = 5) +
+  scale_x_discrete(labels = c("Unfiltered", "Filtered")) +
+  scale_y_continuous(limits = c(0, y_range[2] * 1.3)) +
+  scale_color_manual(values = c("red", "blue"),
+                      labels = c("Unfiltered", "Filtered")) +
+  labs(x = "", y = "Annual carbon loss (Mg/ha)") +
+  theme_bw() +
+  theme(panel.grid = element_blank(),
+        legend.position = "none",
+        strip.text = element_text(size = 20),
+        axis.title = element_text(size = 16),
+        axis.text = element_text(size = 14))
+ggsave(paste0(out_path, "_vicinity_filtering_by_", by_source, ".png"), width = 4000, height = 4000, units = "px")
 
 
 # Get additionality of all projects ----
@@ -241,55 +315,8 @@ additionality_out = lapply(seq_along(projects), function(i) { #mclapply() does n
   matches = read_parquet(paste0(file_prefix, "matches.parquet")) %>%
     rename(luc10 = all_of(luc_t_10), luc0 = all_of(luc_t0), s_ecoregion = ecoregion)
 
-  #load filtering threshold and find vicinity with filtering
-  effect_labels = effect_labels_df[i, ]
-  thres = thres_df[i, ]
-
-  if(is.na(thres$slope)) {
-    slope_exclude = rep(F, nrow(matches))
-  } else {
-    slope_exclude = switch(effect_labels$slope,
-                           "Neg." = (matches$slope >= thres$slope),
-                           "Pos." = (matches$slope <= thres$slope),
-                           "N.S." = rep(F, nrow(matches)))
-  }
-
-  if(is.na(thres$elevation)) {
-    elevation_exclude = rep(F, nrow(matches))
-  } else {
-    elevation_exclude = switch(effect_labels$elevation,
-                               "Neg." = (matches$elevation >= thres$elevation),
-                               "Pos." = (matches$elevation <= thres$elevation),
-                               "N.S." = rep(F, nrow(matches)))
-  }
-
-  if(is.na(thres$access)) {
-    access_exclude = rep(F, nrow(matches))
-  } else {
-    access_exclude = switch(effect_labels$access,
-                            "Neg." = (matches$access >= thres$access),
-                            "Pos." = (matches$access <= thres$access),
-                            "N.S." = rep(F, nrow(matches)))
-  }
-
-  vicinity = matches %>%
-    dplyr::select(c("elevation", "slope", "access", "luc10", "luc0")) %>%
-    mutate(exclude = (slope_exclude | elevation_exclude | access_exclude),
-           lucc = paste(luc10, luc0, sep = "_"),
-           defor = ifelse(lucc %in% c("1_2", "1_3", "1_4"), 1, 0),
-           acd_t_10 = acd$carbon.density[match(luc10, acd$land.use.class)],
-           acd_t0 = acd$carbon.density[match(luc0, acd$land.use.class)],
-           c_loss = (acd_t_10 - acd_t0) / 10)
-
-  vicinity_area = nrow(vicinity) * 900 / 10000 #convert from numbers of 30x30m2 pixels to hectares
-  vicinity_area_filtered = nrow(subset(vicinity, !exclude)) * 900 / 10000 #convert from numbers of 30x30m2 pixels to hectares
-
-  #sub-sample project vicinity down to around 1/10 of the smallest vicinity size of the 15 projects (2559309)
-  if(nrow(vicinity) > 250000) vicinity = vicinity[sample(nrow(vicinity), 250000), ]
-
   #gather common project-level variables
-  project_var = data.frame(project = proj_name, t0 = t0, country = country, acd_1 = acd_1, area_ha = area_ha,
-                           vicinity_area = vicinity_area, vicinity_area_filtered = vicinity_area_filtered)
+  project_var = data.frame(project = proj_name, t0 = t0, country = country, acd_1 = acd_1, area_ha = area_ha)
 
   #find paths to match and unmatached points in each sampled pairs
   pair_paths = list.files(pair_dirs[i], full = T) %>% str_subset(".parquet")
@@ -299,7 +326,7 @@ additionality_out = lapply(seq_along(projects), function(i) { #mclapply() does n
 
   #exit if no matches
   if(length(matched_paths) == 0) {
-    return(list(vicinity = vicinity, project_var = project_var, additionality_estimates = NULL))
+    return(list(project_var = project_var, additionality_estimates = NULL))
   }
 
   #loop through all sampled pairs, get matched points and additionality series in each pair
@@ -335,7 +362,7 @@ additionality_out = lapply(seq_along(projects), function(i) { #mclapply() does n
 
   b = Sys.time()
   cat(proj_id, ":", b - a, "\n")
-  return(list(vicinity = vicinity, project_var = project_var, additionality_estimates = additionality_estimates))
+  return(list(project_var = project_var, additionality_estimates = additionality_estimates))
 })
 names(additionality_out) = projects
 
@@ -348,7 +375,7 @@ saveRDS(project_var, paste0(out_path, "_project_var.rds"))
 #project_var = read_rds(paste0(out_path, "_project_var.rds"))
 
 #basic information
-basic_df = project_var %>% dplyr::select(t0, country, area_ha, vicinity_area, project)
+basic_df = project_var %>% dplyr::select(t0, country, area_ha, project)
 write.table(basic_df, paste0(out_path, "_basic_info.csv"), sep = ",", row.names = F)
 
 #additionality time series
@@ -357,12 +384,6 @@ names(additionality_estimates) = projects
 saveRDS(additionality_estimates, paste0(out_path, "_additionality_estimates.rds"))
 #additionality_estimates = read_rds(paste0(out_path, "_additionality_estimates.rds"))
 
-#project vicinity
-vicinity_list = lapply(additionality_out, function(x) x$vicinity)
-names(vicinity_list) = projects
-saveRDS(vicinity_list, paste0(out_path, "_vicinity.rds"))
-#vicinity_list = read_rds(paste0(out_path, "_vicinity.rds"))
-
 
 # Ex ante analysis ----
 ex_ante_out = lapply(seq_along(projects), function(i) {
@@ -370,12 +391,12 @@ ex_ante_out = lapply(seq_along(projects), function(i) {
   area_ha = project_var$area_ha[i]
   vicinity = vicinity_list[[i]]
   if(forecast) {
-    obs_val = data.frame(c_loss = NA, additionality = NA)
+    obs_val = data.frame(c_loss = NA, t_loss = NA, additionality = NA)
   } else {
     obs_val = additionality_estimates[[i]] %>%
       filter(started) %>%
-      mutate(c_loss = c_loss / area_ha,
-             additionality = additionality / area_ha)
+      dplyr::select(c("c_loss", "t_loss", "additionality")) %>%
+      mutate_all(function(x) x = x / area_ha)
   }
 
   CalcExAnte(proj_id = proj_id, vicinity = vicinity, obs_val = obs_val)
@@ -409,7 +430,6 @@ write_rds(plot_df, paste0(out_path, "_plot_df.rds"))
 #plot_df = read_rds(paste0(out_path, "_plot_df.rds"))
 
 #overcrediting and reversal risk
-
 risk_summary = lapply(ex_ante_out, function(x) {
   x$risk_overcrediting %>%
     pivot_wider(names_from = "scenario", values_from = c("forecast", "risk"))
@@ -427,38 +447,6 @@ write.table(obs_c_loss_summ, paste0(out_path, "_obs_c_loss.csv"), sep = ",", row
 
 
 # Plot ex ante outputs ----
-#plot difference before/after filtering
-p_filter_df = lapply(seq_along(projects), function(i) {
-  plot_df[[i]] %>%
-    filter(Type != "obs_c_loss") %>%
-    mutate(project = projects[i])
-}) %>%
-  do.call(rbind, .) %>%
-  mutate(project = factor(project, levels = projects))
-y_range = range(p_filter_df$Value)
-ses_plot_df = ses_df %>%
-  mutate(ses = paste0("SES: ", round(ses, 2)))
-
-p_filter = ggplot(data = p_filter_df, aes(x = Type, y = Value)) +
-  geom_boxplot(aes(color = Type)) +
-  facet_wrap(vars(project), ncol = 5) +
-  ggpubr::stat_compare_means(method = "t.test", aes(label = ..p.signif..),
-                             label.x = 1.5, label.y = y_range[2] * 1.1, size = 5) +
-  geom_text(data = ses_plot_df,
-            mapping = aes(x = 1.5, y = y_range[2] * 1.2, label = ses), size = 5) +
-  scale_x_discrete(labels = c("Unfiltered", "Filtered")) +
-  scale_y_continuous(limits = c(0, y_range[2] * 1.3)) +
-  scale_color_manual(values = c("red", "blue"),
-                      labels = c("Unfiltered", "Filtered")) +
-  labs(x = "", y = "Annual carbon loss (Mg/ha)") +
-  theme_bw() +
-  theme(panel.grid = element_blank(),
-        legend.position = "none",
-        strip.text = element_text(size = 20),
-        axis.title = element_text(size = 16),
-        axis.text = element_text(size = 14))
-ggsave(paste0(out_path, "_vicinity_filtering.png"), width = 4000, height = 4000, units = "px")
-
 #plot C loss distributions
 p_c_loss_df = lapply(seq_along(plot_df), function(i) {
   plot_df[[i]] %>%
@@ -466,24 +454,25 @@ p_c_loss_df = lapply(seq_along(plot_df), function(i) {
     mutate(project = projects[i])
 }) %>%
   do.call(rbind, .) %>%
-  mutate(project = factor(project, levels = projects))
+  mutate(project = factor(project, levels = projects),
+         Type = factor(Type, levels = c("base_c_loss_filt", "obs_c_loss", "obs_t_loss", "additionality")))
 
 p_c_loss = ggplot(data = p_c_loss_df, aes(x = Type, y = Value)) +
   geom_boxplot(aes(color = Type)) +
+  geom_hline(yintercept = 0, linetype = 3) +
   facet_wrap(vars(project), ncol = 5) +
-  scale_x_discrete(labels = c("Baseline", "Observed")) +
-  scale_color_manual(values = c("red", "black"),
-                      labels = c("Baseline", "Observed")) +
-  scale_linetype_manual(values = c(2, 1),
-                        labels = c("Baseline", "Observed")) +
-  labs(x = "", y = "Annual carbon loss (Mg/ha)") +
+  scale_x_discrete(labels = c("Baseline\nC loss", "Observed\nCounterfactual\nC loss", "Observed\nProject\nC loss", "Additionality")) +
+  scale_color_manual(values = c("red", "black", "black", "blue"),
+                     labels = c("Baseline\nC loss", "Observed\nCounterfactual\nC loss", "Observed\nProject\nC loss", "Additionality")) +
+  labs(x = "", y = "Annual carbon flux (Mg/ha)") +
   theme_bw() +
   theme(panel.grid = element_blank(),
         legend.position = "none",
         strip.text = element_text(size = 20),
         axis.title = element_text(size = 16),
-        axis.text = element_text(size = 14))
-ggsave(paste0(out_path, "_c_loss_disribution.png"), width = 4000, height = 4000, units = "px")
+        axis.text = element_text(size = 14),
+        axis.text.x = element_text(angle = 90))
+ggsave(paste0(out_path, "_c_loss_disribution.png"), width = 4000, height = 6000, units = "px")
 
 #plot over-claiming risks
 p_risk_df = lapply(seq_along(projects), function(i) {
@@ -496,12 +485,12 @@ p_risk_df = lapply(seq_along(projects), function(i) {
   mutate(scenario = factor(scenario, levels = c(25, 50, 75, 100)))
 
 project_label = data.frame(project = projects,
-                           y = filter(p_risk_df, scenario == 1)$risk)
+                           y = filter(p_risk_df, scenario == 100)$risk)
 
 p_risk = ggplot(data = p_risk_df, aes(x = scenario, y = risk, group = project)) +
   geom_line(aes(color = project), linewidth = 2) +
   geom_text(data = project_label, aes(x = 4.1, y = y, label = project)) +
-  labs(x = "% of effectiveness in avoiding deforestation", y = "Over-claiming risk") +
+  labs(x = "Assumed scenario (% effectiveness)", y = "Over-claiming risk") +
   theme_classic() +
   theme(legend.position = "none",
         axis.title = element_text(size = 16),

@@ -1,8 +1,11 @@
-FilterPoints = function(analysis_type, proj_id) { #mclapply() does not work on Windows
+FilterVicinity = function(analysis_type, proj_id, by_source = "k") { #mclapply() does not work on Windows
   if(analysis_type == "old_source") {
     cat("Use new results from epr26 instead.\n")
     return(NULL)
   }
+  a = Sys.time()
+
+  var_vec = c("slope", "elevation", "access")
 
   t0 = switch(analysis_type,
               "full" = filter(proj_meta, ID == str_replace(proj_id, "a", ""))$t0,
@@ -23,9 +26,15 @@ FilterPoints = function(analysis_type, proj_id) { #mclapply() does not work on W
                               "ac" = ""),
                        proj_id)
 
-  k = read_parquet(paste0(file_prefix, "k.parquet")) %>%
+  #get ACD and ACD of undisturbed forest
+  acd = read.csv(paste0(file_prefix, "carbon-density.csv"))
+  for(class in 1:6) {
+    if(class %in% acd$land.use.class == F) acd = rbind(acd, c(class, NA))
+  }
+
+  k = read_parquet(paste0(file_prefix, by_source, ".parquet")) %>%
     rename(luc10 = all_of(luc_t_10), luc0 = all_of(luc_t0)) %>%
-    dplyr::select(c("elevation", "slope", "access", luc10, luc0)) %>%
+    dplyr::select(c("elevation", "slope", "access", "luc10", "luc0")) %>%
     mutate(lucc = paste(luc10, luc0, sep = "_"),
            defor = ifelse(lucc %in% c("1_2", "1_3", "1_4"), 1, 0))
 
@@ -47,9 +56,9 @@ FilterPoints = function(analysis_type, proj_id) { #mclapply() does not work on W
   ) %>%
     matrix(., nrow = 1, ncol = 3) %>%
     as.data.frame()
-  colnames(effect_labels) = c("slope", "elevation", "access")
+  colnames(effect_labels) = var_vec
 
-  out = lapply(c("slope", "elevation", "access"), function(x) {
+  out = lapply(var_vec, function(x) {
     x_label = switch(x,
                     "slope" = "Slope",
                     "elevation" = "Elevation (m)",
@@ -94,12 +103,64 @@ FilterPoints = function(analysis_type, proj_id) { #mclapply() does not work on W
   })
 
   exclude_ratio = sapply(out, function(x) x$exclude_ratio)
-  thres = sapply(out, function(x) x$thres)
+  thres = sapply(out, function(x) x$thres) %>%
+    matrix(., nrow = 1, ncol = 3) %>%
+    as.data.frame()
+  colnames(thres) = var_vec
   plotlist = lapply(out, function(x) x$p)
-  names(plotlist) = c("slope", "elevation", "access")
+  names(plotlist) = var_vec
 
+  #filter matches to be vicinity
+  matches = read_parquet(paste0(file_prefix, "matches.parquet")) %>%
+    rename(luc10 = all_of(luc_t_10), luc0 = all_of(luc_t0))
+
+  if(is.na(thres$slope)) {
+    slope_exclude = rep(F, nrow(matches))
+  } else {
+    slope_exclude = switch(effect_labels$slope,
+                           "Neg." = (matches$slope >= thres$slope),
+                           "Pos." = (matches$slope <= thres$slope),
+                           "N.S." = rep(F, nrow(matches)))
+  }
+
+  if(is.na(thres$elevation)) {
+    elevation_exclude = rep(F, nrow(matches))
+  } else {
+    elevation_exclude = switch(effect_labels$elevation,
+                               "Neg." = (matches$elevation >= thres$elevation),
+                               "Pos." = (matches$elevation <= thres$elevation),
+                               "N.S." = rep(F, nrow(matches)))
+  }
+
+  if(is.na(thres$access)) {
+    access_exclude = rep(F, nrow(matches))
+  } else {
+    access_exclude = switch(effect_labels$access,
+                            "Neg." = (matches$access >= thres$access),
+                            "Pos." = (matches$access <= thres$access),
+                            "N.S." = rep(F, nrow(matches)))
+  }
+
+  vicinity = matches %>%
+    dplyr::select(c(var_vec, "luc10", "luc0")) %>%
+    mutate(exclude = (slope_exclude | elevation_exclude | access_exclude),
+           lucc = paste(luc10, luc0, sep = "_"),
+           defor = ifelse(lucc %in% c("1_2", "1_3", "1_4"), 1, 0),
+           acd_t_10 = acd$carbon.density[match(luc10, acd$land.use.class)],
+           acd_t0 = acd$carbon.density[match(luc0, acd$land.use.class)],
+           c_loss = (acd_t_10 - acd_t0) / 10)
+
+  vicinity_area = nrow(vicinity) * 900 / 10000 #convert from numbers of 30x30m2 pixels to hectares
+  vicinity_area_filtered = nrow(subset(vicinity, !exclude)) * 900 / 10000 #convert from numbers of 30x30m2 pixels to hectares
+
+  #sub-sample project vicinity down to around 1/10 of the smallest vicinity size of the 15 projects (2559309)
+  if(nrow(vicinity) > 250000) vicinity = vicinity[sample(nrow(vicinity), 250000), ]
+
+  b = Sys.time()
+  b - a
   return(list(k = k, logit_k = logit_k, coefficients = coefficients, pval = pval, effect_labels = effect_labels,
-              exclude_ratio = exclude_ratio, thres = thres, plotlist = plotlist))
+              exclude_ratio = exclude_ratio, thres = thres, plotlist = plotlist,
+              vicinity_area = vicinity_area, vicinity_area_filtered = vicinity_area_filtered, vicinity = vicinity))
 }
 
 #1 / (1 + exp(-(logit_k_coef[1, 1] + logit_k_coef[2, 1] * 242.6669 + logit_k_coef[3, 1] * 6.0885 + logit_k_coef[4, 1] * 22)))
