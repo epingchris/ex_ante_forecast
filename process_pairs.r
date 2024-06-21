@@ -283,8 +283,97 @@ saveRDS(additionality_estimates, paste0(out_path, "_additionality_estimates.rds"
 
 
 # Find filtering thresholds ----
-by_source = "matches" #k, matches
+var_vec = c("slope", "elevation", "access")
+var_label = c("Slope (dgree)", "Elevation (meter)", "Remoteness (minutes)")
 filter_out = lapply(projects, function(x) FilterBaseline(analysis_type = analysis_type, proj_id = x))
+
+#visualise and compare results when filtering is done with logistic fitted to K or to M: the results are similar, so only results using M is used
+p_k_m_list = lapply(filter_out, function(x) x$plotlist %>% cowplot::plot_grid(plotlist = ., byrow = F, nrow = 3, ncol = 2))
+
+df_effect = lapply(filter_out, function(x) x$df_summary$by_m[1:3]) %>% do.call(rbind, .)
+colnames(df_effect) = var_vec
+
+var_max = c(25, 3000, 2000)
+text_adjust = c(1, 200, 200)
+for(i in seq_along(var_vec)) {
+  var_i = var_vec[i]
+  var_label_i = var_label[i]
+  df_filtering = lapply(seq_along(filter_out), function(j) {
+    out_j = filter_out[[j]]$baseline
+    out_df = data.frame(all = mean(out_j %>% pull(all_of(var_i)), na.rm = T),
+                        low = mean(filter(out_j, risk_m == "low") %>% pull(all_of(var_i)), na.rm = T),
+                        high = mean(filter(out_j, risk_m == "high") %>% pull(all_of(var_i)), na.rm = T)) %>%
+      mutate(max = apply(., 1, max),
+             project = projects[j])
+    return(out_df)
+  }) %>%
+    do.call(rbind, .) %>%
+    mutate(project = factor(project, levels = projects),
+           rank = rank(all))
+
+ggplot(data = df_filtering, aes(x = rank)) +
+    geom_point(aes(y = low, color = "blue")) +
+    geom_point(aes(y = high, color = "red")) +
+    geom_point(aes(y = all, color = "black")) +
+    geom_segment(aes(y = all, xend = rank, yend = low), color = "blue") +
+    geom_segment(aes(y = all, xend = rank, yend = high), color = "red") +
+    geom_text(aes(x = rank, y = max + text_adjust[i], label = project), size = 4) +
+    scale_color_manual(name = "Pixel type", values = c("black", "blue", "red"),
+                       labels = c("All", "Low deforestation probability", "High deforestation probability")) +
+    labs(x = "Project", y = var_label_i) +
+    theme_classic() +
+    theme(panel.grid = element_blank(),
+          legend.position = "bottom",
+          legend.direction = "vertical",
+          axis.title = element_text(size = 16),
+          axis.text = element_text(size = 14),
+          axis.text.x = element_blank(),
+          axis.ticks.x = element_blank(),
+          legend.text = element_text(size = 14))
+  ggsave(paste0(out_path, "_filtering_comparison_new_", var_i, ".png"), width = 2000, height = 2000, unit = "px")
+}
+
+df_slope_filtering = lapply(seq_along(filter_out), function(i) {
+  data.frame(project = projects[i],
+             all = mean(filter_out[[i]]$baseline$slope, na.rm = T),
+             low = mean(filter(filter_out[[i]]$baseline, risk_m == "low")$slope, na.rm = T),
+             high = mean(filter(filter_out[[i]]$baseline, risk_m == "high")$slope, na.rm = T))
+  }) %>%
+  do.call(rbind, .)
+df_elevation_filtering = lapply(seq_along(filter_out), function(i) {
+  data.frame(project = projects[i],
+             all = mean(filter_out[[i]]$baseline$elevation, na.rm = T),
+             low = mean(filter(filter_out[[i]]$baseline, risk_m == "low")$elevation, na.rm = T),
+             high = mean(filter(filter_out[[i]]$baseline, risk_m == "high")$elevation, na.rm = T))
+  }) %>%
+  do.call(rbind, .)
+df_access_filtering = lapply(seq_along(filter_out), function(i) {
+  data.frame(project = projects[i],
+             all = mean(filter_out[[i]]$baseline$access, na.rm = T),
+             low = mean(filter(filter_out[[i]]$baseline, risk_m == "low")$access, na.rm = T),
+             high = mean(filter(filter_out[[i]]$baseline, risk_m == "high")$access, na.rm = T))
+  }) %>%
+  do.call(rbind, .)
+
+
+ggplot(data = df_slope_filtering, aes(x = all)) +
+  geom_point(aes(y = low, color = "blue")) +
+  geom_point(aes(y = high, color = "red")) +
+  geom_segment(aes(y = all, xend = all, yend = low), arrow = arrow(length = unit(0.01, "npc")), color = "blue") +
+  geom_segment(aes(y = all, xend = all, yend = high), arrow = arrow(length = unit(0.01, "npc")), color = "red") +
+  geom_text(aes(x = all, y = low * 1.1, label = project), size = 6) +
+  geom_abline(slope = 1, intercept = 0) +
+  scale_color_manual(values = c("blue", "red"), labels = c("Low-risk", "High-risk")) +
+  scale_x_continuous(limits = c(0, 25)) +
+  scale_y_continuous(limits = c(0, 25)) +
+  labs(x = "Slope (degree) (before filtering)", y = "Slope (degree) (after filtering)") +
+  theme_classic() +
+  theme(panel.grid = element_blank(),
+        legend.position = "bottom",
+        axis.title = element_text(size = 18),
+        axis.text = element_text(size = 16),
+        legend.text = element_text(size = 16))
+ggsave("filtering_comparison_slope.png", width = 800, height = 800)
 
 effect_pval_df = lapply(filter_out, function(x) x$pval) %>% do.call(rbind, .) %>% signif(., 2)
 write.table(effect_pval_df, paste0(out_path, "_effect_pval_by_", by_source, ".csv"), sep = ",", row.names = F)

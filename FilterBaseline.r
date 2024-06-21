@@ -5,8 +5,6 @@ FilterBaseline = function(analysis_type, proj_id) { #mclapply() does not work on
   }
   a = Sys.time()
 
-  var_vec = c("slope", "elevation", "access")
-
   t0 = switch(analysis_type,
               "full" = filter(proj_meta, ID == str_replace(proj_id, "a", ""))$t0,
               "grid" = filter(proj_meta, ID == "1201")$t0,
@@ -40,35 +38,27 @@ FilterBaseline = function(analysis_type, proj_id) { #mclapply() does not work on
   if(nrow(M) > 250000) M = M[sample(nrow(M), 250000), ]
 
   #obtain dependent variable of presence/absence of deforestation
+  #only keep pixels who where undisturbed at t-10, because for pixels who aren't it becomes complicated to talk about their deforestation
   K = K %>%
     rename(luc10 = all_of(luc_t_10), luc0 = all_of(luc_t0)) %>%
     dplyr::select(c("lat", "lng", all_of(var_vec), "luc10", "luc0", "cpc10_u", "cpc10_d", "cpc0_u", "cpc0_d")) %>%
-    mutate(defor = ifelse(luc10 == 1 & luc0 %in% c(2, 3, 4), 1, 0))
+    filter(luc10 == 1) %>%
+    mutate(defor = ifelse(luc0 %in% c(2, 3, 4), 1, 0))
   M = M %>%
     rename(luc10 = all_of(luc_t_10), luc0 = all_of(luc_t0)) %>%
     dplyr::select(c("lat", "lng", all_of(var_vec), "luc10", "luc0", "cpc10_u", "cpc10_d", "cpc0_u", "cpc0_d")) %>%
-    mutate(defor = ifelse(luc10 == 1 & luc0 %in% c(2, 3, 4), 1, 0))
+    filter(luc10 == 1) %>%
+    mutate(defor = ifelse(luc0 %in% c(2, 3, 4), 1, 0))
 
-  #perform logistic regression on pixels who where undisturbed at t-10
-  glm_k = glm(defor ~ slope + elevation + access, data = filter(K, luc10 == 1), family = "binomial")
-  glm_m = glm(defor ~ slope + elevation + access, data = filter(M, luc10 == 1), family = "binomial")
+  #perform logistic regression
+  glm_k = glm(defor ~ slope + elevation + access, data = K, family = "binomial")
+  glm_m = glm(defor ~ slope + elevation + access, data = M, family = "binomial")
 #  summary(glm_k)
 #  confint(glm_k)
 
-  #retrieve model coefficient and effect significance/sign
+  #retrieve model coefficient
   coef_k = summary(glm_k)$coefficients
   coef_m = summary(glm_m)$coefficients
-
-  effects_k = case_when(
-    coef_k[2:4, 4] < 0.05 & coef_k[2:4, 1] > 0 ~ "Pos.",
-    coef_k[2:4, 4] < 0.05 & coef_k[2:4, 1] < 0 ~ "Neg.",
-    coef_k[2:4, 4] >= 0.05 ~ "N.S.")
-  effects_m = case_when(
-    coef_m[2:4, 4] < 0.05 & coef_m[2:4, 1] > 0 ~ "Pos.",
-    coef_m[2:4, 4] < 0.05 & coef_m[2:4, 1] < 0 ~ "Neg.",
-    coef_m[2:4, 4] >= 0.05 ~ "N.S.")
-  effects = data.frame(k = effects_k, m = effects_m)
-  rownames(effects) = var_vec
 
   #predict deforestation probability using the logit function (predict() is far too slow)
   baseline = M %>%
@@ -92,7 +82,6 @@ FilterBaseline = function(analysis_type, proj_id) { #mclapply() does not work on
            risk_m = factor(risk_m, levels = c("low", "high")))
 
   #plot difference in environmental variables between low vs high-risk pixels
-  var_label = c("Slope (dgree)", "Elevation (meter)", "Remoteness (minutes)")
   p_k = lapply(seq_along(var_vec), function(i) {
     ggplot(data = baseline, aes(x = risk_k, y = .data[[var_vec[i]]], group = risk_k)) +
       geom_boxplot() +
@@ -118,18 +107,29 @@ FilterBaseline = function(analysis_type, proj_id) { #mclapply() does not work on
             strip.text = element_text(size = 14))
   })
 
-#plot_k_m = cowplot::plot_grid(plotlist = c(p_k, p_m), byrow = F, nrow = 3, ncol = 2)
+  #summarise effect significance/sign and obtain ratio of pixels in baseline or project area that are predicted to be low-risk
+  effects_k = case_when(
+    coef_k[2:4, 4] < 0.05 & coef_k[2:4, 1] > 0 ~ "Pos.",
+    coef_k[2:4, 4] < 0.05 & coef_k[2:4, 1] < 0 ~ "Neg.",
+    coef_k[2:4, 4] >= 0.05 ~ "N.S.")
+  effects_m = case_when(
+    coef_m[2:4, 4] < 0.05 & coef_m[2:4, 1] > 0 ~ "Pos.",
+    coef_m[2:4, 4] < 0.05 & coef_m[2:4, 1] < 0 ~ "Neg.",
+    coef_m[2:4, 4] >= 0.05 ~ "N.S.")
+  effects = data.frame(by_k = effects_k, by_m = effects_m)
+  rownames(effects) = var_vec
 
-  #obtain ratio of pixels in baseline or project area that are predicted to be low-risk
-  low_risk_ratio = data.frame(
-    baseline_by_k = nrow(subset(baseline, risk_k == "low")) / nrow(baseline),
-    baseline_by_m = nrow(subset(baseline, risk_m == "low")) / nrow(baseline),
-    project_by_k = nrow(subset(project_filtered, risk_k == "low")) / nrow(project_filtered),
-    project_by_m = nrow(subset(project_filtered, risk_m == "low")) / nrow(project_filtered)
-  )
+  #summarise ratio of pixels in baseline or project area that are predicted to be low-risk
+  low_risk_perc = data.frame(
+    by_k = c(nrow(subset(baseline, risk_k == "low")) / nrow(baseline),
+             nrow(subset(project_filtered, risk_k == "low")) / nrow(project_filtered)),
+    by_m = c(nrow(subset(baseline, risk_m == "low")) / nrow(baseline),
+             nrow(subset(project_filtered, risk_m == "low")) / nrow(project_filtered)))
+  rownames(low_risk_perc) = c("baseline_low_risk_perc", "project_low_risk_perc")
+  df_summary = rbind(effects, round(low_risk_perc * 100, 2))
 
   b = Sys.time()
   cat(proj_id, ":", b - a, "\n")
-  return(list(glm_k = glm_k, glm_m = glm_m, effects = effects, plotlist = c(p_k, p_m),
-              baseline = baseline, project_filtered = project_filtered, low_risk_ratio = low_risk_ratio))
+  return(list(glm_k = glm_k, glm_m = glm_m, plotlist = c(p_k, p_m),
+              baseline = baseline, project_filtered = project_filtered, df_summary = df_summary))
 }
