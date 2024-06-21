@@ -31,7 +31,7 @@ library(microbenchmark) #microbenchmark::microbenchmark
 # library(countrycode)
 
 source("functions.r") #cpc_rename, tmfemi_reformat
-source("FilterVicinity.r")
+source("FilterBaseline.r")
 source("ProcessPairs.r") #RetrievePoints, ProcessPairs
 source("CalcExAnte.r")
 
@@ -284,7 +284,7 @@ saveRDS(additionality_estimates, paste0(out_path, "_additionality_estimates.rds"
 
 # Find filtering thresholds ----
 by_source = "matches" #k, matches
-filter_out = lapply(projects, function(x) FilterVicinity(analysis_type = analysis_type, proj_id = x))
+filter_out = lapply(projects, function(x) FilterBaseline(analysis_type = analysis_type, proj_id = x))
 
 effect_pval_df = lapply(filter_out, function(x) x$pval) %>% do.call(rbind, .) %>% signif(., 2)
 write.table(effect_pval_df, paste0(out_path, "_effect_pval_by_", by_source, ".csv"), sep = ",", row.names = F)
