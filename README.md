@@ -8,6 +8,7 @@ Its inputs are:
 4. Carbon density per LUC ("directory_path/file_prefix_carbon-density.csv")
 5. Project polygon paths: a vector of the full paths of the project polygons (used to calculate project area)
 6. Year of start of project: real or hypothetical, depending whether ongoing projects are being analysed or not
+7. Country of project
 
 Its outputs are:
 1. project_var: a data frame of basic information of every project
