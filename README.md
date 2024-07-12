@@ -75,6 +75,6 @@ This is a csv file containing a long-form data frame, containing the columns "pr
 
 D.
 1. forecast_summ: additionality forecast under different scenarios
-This is a csv file containing N rows (one for each project)
- [1] "X"        "mean_100" "ci_100"   "mean_75"  "ci_75"    "mean_50" 
- [7] "ci_50"    "mean_25"  "ci_25"    "project"
+This is a csv file containing N rows (one for each project), and the columns "mean_100", "ci_100", "mean_75", "ci_75", "mean_50", "ci_50", "mean_25", "ci_25", and "project". The columns prefixed "mean_" indicate the forecasted mean annual additionality (MgC/ha/yr), and the columns prefixed "ci_" indicate its confidence interval, under the scenarios of 100%, 75%, 50%, and 25% project effectiveness, respectively.
+
+Apart from these outputs, the script also generates a number of plots for visualisation. Currently they are all used for figures in E-Ping's manuscript, and can be deactivated by setting the variable "visualise" to FALSE.
