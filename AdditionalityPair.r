@@ -1,8 +1,12 @@
-RetrievePoints = function(matched_path, matchless_path, k, matches, t0) {
+#retrieve time series of observed carbon loss and additionality per matched pair
+AdditionalityPair = function(matched_path, matchless_path, k, matches, t0, area_ha, acd, pair_id) {
+    c = Sys.time()
+
+    #add ecoregion information to each matched pixel
     pairs = read_parquet(matched_path) %>%
-        dplyr::left_join(., k, by = join_by(k_lat == lat, k_lng == lng)) %>%
-        dplyr::left_join(., matches, by = join_by(s_lat == lat, s_lng == lng))
-#        mutate(s_id = 1:n(), k_id = 1:n())
+    dplyr::left_join(., k, by = join_by(k_lat == lat, k_lng == lng)) %>%
+    dplyr::left_join(., matches, by = join_by(s_lat == lat, s_lng == lng))
+#   mutate(s_id = 1:n(), k_id = 1:n())
 
     unmatched_pairs = read_parquet(matchless_path)
 
@@ -18,16 +22,8 @@ RetrievePoints = function(matched_path, matchless_path, k, matches, t0) {
         mutate(treatment = "treatment") %>%
         tmfemi_reformat(t0 = t0)
 
-    return(list(exp_n_pairs = nrow(treat) + nrow(unmatched_pairs),
-                pts_matched = rbind(treat, control)))
-}
-
-ProcessPairs = function(matched_path, matchless_path, k, matches, t0, area_ha, acd, pair_id) { #loop through all sampled pairs
-    c = Sys.time()
-
-    points = RetrievePoints(matched_path, matchless_path, k, matches, t0)
-    exp_n_pairs = points$exp_n_pairs
-    pts_matched = points$pts_matched %>%
+    exp_n_pairs = nrow(treat) + nrow(unmatched_pairs)
+    pts_matched = rbind(treat, control) %>%
       mutate(defor_5_0 = (cpc5_u - cpc0_u) / 5,
              defor_10_5 = (cpc10_u - cpc5_u) / 5,
              defor_10_0 = (cpc10_u - cpc0_u) / 10,
@@ -52,10 +48,12 @@ ProcessPairs = function(matched_path, matchless_path, k, matches, t0, area_ha, a
         mutate(pair = pair_id)
 
     #calculate annual proportion of each land use class
-    luc_series = simulate_area_series(pts_matched,
-                                      class_prefix, t0 = t0, match_years, match_classes,
-                                      exp_n_pairs, area_ha,
-                                      verbose = F)
+    class_prefix = "JRC"
+    match_years = c(0, -5, -10)
+    match_classes = c(1, 3)
+    luc_series = simulate_area_series(pts_matched, class_prefix = class_prefix, t0 = t0,
+                                      match_years = match_years, match_classes = match_classes,
+                                      exp_n_pairs, area_ha, verbose = F)
 
     #project pixel and matched pixel's pre-project and during-project LUC change
     lucc = luc_series$series %>%
