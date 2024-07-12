@@ -1,8 +1,17 @@
-This R script receives the output of the TMF implementation (https://github.com/quantifyearth/tmf-implementation),
-and calculates the baseline deforestation and carbon loss. The baseline is currently based on the set M (matches.parquet), and is subject to change in the future.
+This R repository receives the output of the TMF implementation (https://github.com/quantifyearth/tmf-implementation) for N REDD+ projects to be analysed,
+and calculates the baseline deforestation and carbon loss, generates additionality forecast and evaluates overclaiming risk. The baseline is currently based on the set M (matches.parquet), and is subject to change in the future.
+
+
+The core script, forecast.R, contains the following five parts:
+0. Setup
+A. Obtain observed additionality
+B. Predict deforestation probability of baseline pixels using logistic regression
+C. Calculate boostrapped baseline C loss
+D. Generate additionality forecast and estimate overclaiming risk
+
 
 It requires the following input variables to read TMF implementation output and other data.
-All variables are vectors containing one value for each project to be analysed:
+All variables are vectors of length N (number of projects to be analysed):
 
 1. projects: character, an index of all projects to be analysed; it could be the projects' VCS ID or customised (e.g. simply a series of integers)
 
@@ -28,8 +37,37 @@ This is currently only used to calculate project area (ha), but could be useful 
 10. out_path: character, absolute paths of the directory where outputs are to be saved; include file prefix if desired
 
 
-Its outputs are:
-1. project_var: a data frame of basic information of every project
-2. additionality_estimates: a list of the datas frames containing observed additionality estimates for each project
-3. baseline_list: a list of the data frames containing each baseline pixel, its predicted deforestation probability, and its C loss
-4. forecast_summ: a data frame of additionality forecast based on bootstrapped baseline C loss estimates and its confidence interval under different assumptions of project effectiveness
+It generates the following output:
+
+A.
+1. project_var: project-level variables
+This is a csv file containings N rows (one for each project), and the columns "project", "t0", "country", "area_ha", "acd_undisturbed", and the min/max/median over 100 samples of the following variables: "slope", "elevation", "accessibility", "cpc{0, 5, 10}_ {u, d}" (coarse proportional cover at t0/t-5/t-10 of undisturbed/deforested pixels), "defor_ {5_0, 10_0, 10_5}" (deforestation defined as CPC change over the period of t-5 to t0, t-10 to t0, or t-10 to t-5).
+
+2. OPTIONAL output: only basic project-level variables "project", "t0", "country", "area_ha"
+
+3. additonality_estimates: observed additionality time series
+
+B.
+1. baseline: predicted baseline deforestation probability
+It is currently a list of N elements, saved as an RDS file that can be read as an R object.
+
+2. #project_defor_prob: predicted project deforestation probability
+It is currently a list of N elements, saved as an RDS file that can be read as an R object.
+
+3. range_defor_prob: total range of predicted baseline deforestation probability in baseline pixels
+It is a vector of N elements
+
+4. baseline_summary: basic information about the baseline
+This is a csv file containing N rows (one for each project), and the columns "project", "baseline_area" (in number of pixels), and "low_risk_ratio" (ratio of baseline pixels classified as "low-risk" based on a threshold of 1% predicted deforestation probability)
+
+C.
+1. df_ses: standardised effect size of change in bootstrapped carbon loss by using only high-risk pixels instead of all pixels in 
+This is a csv file containing N rows (one for each project), and the columns "project", "ses" (
+The standardised effect size is calculated as ("mean carbon loss rate in high-risk pixels" - "mean carbon loss rate in all pixels") / "standard deviation of carbon loss rate in all pixels"
+
+2. c_loss_boot: bootstrapped baseline annual carbon loss rates for all projects
+This is a csv file containing a long-form data frame, containing the columns "project", "type" ("all" for all pixels, "high_risk" for only high-risk pixels), and "val" (each bootstrapped carbon loss rate). The number of values generated (number of rows in each project-type combination) is defined by the variable "boot_n"
+
+D.
+1. forecast_summ: additionality forecast under different scenarios
+This is a csv file containing N rows (one for each project)
