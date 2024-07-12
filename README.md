@@ -46,23 +46,28 @@ This is a csv file containings N rows (one for each project), and the columns "p
 2. OPTIONAL output: only basic project-level variables "project", "t0", "country", "area_ha"
 
 3. additonality_estimates: observed additionality time series
+It is currently a list of N element, saved as an RDS file that can be read as an R object.
+Each element is a data frame containing the columns "year", "c_loss" (counterfactual carbon loss), "t_loss" (project carbon loss), "additionality", "pair" (index of the sampled pairs), "started" (FALSE for years before and including t0, TRUE for years after t0). Each row is a combination of a year and a sampled pair.
 
 B.
 1. baseline: predicted baseline deforestation probability
 It is currently a list of N elements, saved as an RDS file that can be read as an R object.
+Each element is a data frame containing the columns "lat", "lng", "slope", "elevation", "access", "luc10", "luc0", "cpc10_u", "cpc10_d", "cpc0_u", "cpc0_d", "defor" (TRUE if land use class has changed from 1 to 2, 3, or 4 between t-10 and t0, FALSE otherwise), "defor_prob" (predicted deforestation probability based on logistic regression, between 1 an 0), "risk" ("low" if defor_prob < 0.01, "high" otherwise), "acd10", "acd0", "c_loss" (annual carbon loss rate). Each row is a baseline pixel.
 
 2. #project_defor_prob: predicted project deforestation probability
 It is currently a list of N elements, saved as an RDS file that can be read as an R object.
+It is currently a list of N elements, saved as an RDS file that can be read as an R object.
+Each element is a data frame containing the columns "lat", "lng", "slope", "elevation", "access", "luc10", "luc0", "cpc10_u", "cpc10_d", "cpc0_u", "cpc0_d", "defor" (TRUE if land use class has changed from 1 to 2, 3, or 4 between t-10 and t0, FALSE otherwise), "defor_prob" (predicted deforestation probability based on logistic regression, between 1 an 0), "risk" ("low" if defor_prob < 0.01, "high" otherwise), "acd10", "acd0", "c_loss" (annual carbon loss rate). Each row is a project pixel.
 
 3. range_defor_prob: total range of predicted baseline deforestation probability in baseline pixels
-It is a vector of N elements
+It is a data frame of N columns, each for a project. Each column contains the minimum and maximum of predicted baseline deforestation probability.
 
-4. baseline_summary: basic information about the baseline
-This is a csv file containing N rows (one for each project), and the columns "project", "baseline_area" (in number of pixels), and "low_risk_ratio" (ratio of baseline pixels classified as "low-risk" based on a threshold of 1% predicted deforestation probability)
+5. baseline_summary: basic information about the baseline
+This is a csv file containing N rows (one for each project), and the columns "project", "baseline_area" (in number of pixels), "low_risk_ratio" (ratio of baseline pixels classified as "low-risk" based on a threshold of 1% predicted deforestation probability), and "slope", "elevation", "access" (indicating what is the logistic regression result for each of the environmental variables: "Neg." for negative effect, "Pos." for positive effect, and "N.S." for non-significant effect)
 
 C.
 1. df_ses: standardised effect size of change in bootstrapped carbon loss by using only high-risk pixels instead of all pixels in 
-This is a csv file containing N rows (one for each project), and the columns "project", "ses" (
+This is a csv file containing N rows (one for each project), and the columns "project", "ses" (standardised effect size).
 The standardised effect size is calculated as ("mean carbon loss rate in high-risk pixels" - "mean carbon loss rate in all pixels") / "standard deviation of carbon loss rate in all pixels"
 
 2. c_loss_boot: bootstrapped baseline annual carbon loss rates for all projects
@@ -71,3 +76,5 @@ This is a csv file containing a long-form data frame, containing the columns "pr
 D.
 1. forecast_summ: additionality forecast under different scenarios
 This is a csv file containing N rows (one for each project)
+ [1] "X"        "mean_100" "ci_100"   "mean_75"  "ci_75"    "mean_50" 
+ [7] "ci_50"    "mean_25"  "ci_25"    "project"
