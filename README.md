@@ -56,7 +56,6 @@ Each element is a data frame containing the columns "lat", "lng", "slope", "elev
 
 2. #project_defor_prob: predicted project deforestation probability
 It is currently a list of N elements, saved as an RDS file that can be read as an R object.
-It is currently a list of N elements, saved as an RDS file that can be read as an R object.
 Each element is a data frame containing the columns "lat", "lng", "slope", "elevation", "access", "luc10", "luc0", "cpc10_u", "cpc10_d", "cpc0_u", "cpc0_d", "defor" (TRUE if land use class has changed from 1 to 2, 3, or 4 between t-10 and t0, FALSE otherwise), "defor_prob" (predicted deforestation probability based on logistic regression, between 1 an 0), "risk" ("low" if defor_prob < 0.01, "high" otherwise), "acd10", "acd0", "c_loss" (annual carbon loss rate). Each row is a project pixel.
 
 3. range_defor_prob: total range of predicted baseline deforestation probability in baseline pixels
