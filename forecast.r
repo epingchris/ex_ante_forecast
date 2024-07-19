@@ -47,51 +47,61 @@ source("CalcExAnte.r")
 # It requires the following input variables to read TMF implementation output and other data.
 # All variables are vectors containing one value for each project to be analysed:
 
-# 1. projects: an index of all projects to be analysed; it could be the projects' VCS ID or customised (e.g. simply a series of integers)
+#1. projects: an index of all projects to be analysed; it could be the projects' VCS ID or customised (e.g. simply a series of integers)
 
-# 2. pair_dirs: absolute paths of the directories containing all matched pair pixel sets (typically "/pairs/xxx.parquet" and  "/pairs/xxx_matchless.parquet")
+#2. pair_dirs: absolute paths of the directories containing all matched pair pixel sets (typically "/pairs/xxx.parquet" and  "/pairs/xxx_matchless.parquet")
 # The directory should containing pairs of parquet files with the same file name, with and without the "_matchless" suffix.
 # This is used to calculate estimated observed additionality.
 
-# 3. k_paths: absolute paths of the set K (typically "k.parquet")
-# 4. m_paths: absolute paths of the set M (typically "matches.parquet")
+#3. k_paths: absolute paths of the set K (typically "k.parquet")
+#4. m_paths: absolute paths of the set M (typically "matches.parquet")
 # Both should be in parquet format, containing the following columns:
 # "lat", "lng" (degrees), "slope" (degrees), "elevation" (metres), "access" (remoteness, in minutes), "cpc10_u", "cpc10_d", "cpc0_u", "cpc0_d" (from 0 to 1), "luc_[t-10]" to "luc_2021" (categorical, 1-6, based on the JRC-TMF dataset, Vancutsem et al. 2021), "ecoregion" (categorical, based on the RESOLVE dataset, Dinerstein et al. 2017)
 
-# 5. acd_paths: absolute paths of the carbon density per LUC (typically "carbon-density.csv")
+#5. acd_paths: absolute paths of the carbon density per LUC (typically "carbon-density.csv")
 # This should be an csv file (although the script could be modiified in the future to support txt format) containing columns "land.use.class" (categorical, 1-6) and "carbon.density" (MgC/ha) for all six LUCs, although the script checks and fill missing LUC with NAs
 
-# 6. polygon_paths: absolute paths of the shapefile of the project extent
+#6. polygon_paths: absolute paths of the shapefile of the project extent
 # This should be a geojson file containing valid geometries in WGS84 (EPSG: 4326), although the script checks for both conditions.
 # This is currently only used to calculate project area (ha), but could be useful for other purposes in the future.
 
-# 7. country: country of the project
-# 8. t0: year of start of the project (real or hypothetical)
-# 9. OPTIONAL: proj_name: full name of the project for readability (if unspecified, the projects variable will be used)
-# 10. out_path: absolute paths of the directory where outputs are to be saved; include file prefix if desired
+#7. country: country of the project
+#8. t0: year of start of the project (real or hypothetical)
+#9. OPTIONAL: proj_name: full name of the project for readability (if unspecified, the projects variable will be used)
+#10. out_path: absolute paths of the directory where outputs are to be saved; include file prefix if desired
 
 
-#Pre-defined settings for input variables based on analysis type (E-Ping's current workflow)
+# 0a. E-Ping's workflow to obtain input variables ----
+
+#Pre-defined settings for input variables based on analysis type
 analysis_type = "full" #"full", "grid", "ac", "control"
 forecast = (analysis_type == "ac")
 visualise = T #generate plots or not
 
-#Load basic info about projects from Tom's directory: for country and t0 input (E-Ping's current workflow)
-proj_meta = read.csv(paste0("/home/tws36/4c_evaluations/data/project_metadata/proj_meta.csv"))
-
+#Load basic info (csv file copied from Tom's directory) for country and t0 input
+proj_meta = read.csv(paste0("proj_meta.csv"))
 
 if(analysis_type == "full") {
 
-  #to be removed: 0000, 9999 are controls and test; 562, 612, 1202, 1340 have incomplete ACD; 1399 and 1408 anomalous
-  exclude_id = c("0000", "9999", "562", "612a", "1202", "1340a", "1399", "1408")
-
   project_dir = "/maps/epr26/tmf_pipe_out/" #new results from E-Ping's pipeline run
-  projects = list.files(project_dir, full = T) %>%
-    basename() %>%
+  projects = list.files(project_dir) %>% #full = T and basename() negates one another
     str_subset("\\.", negate = T) %>%
     str_subset("\\_", negate = T) %>%
     str_subset("ac", negate = T) %>%
-    setdiff(exclude_id)
+    setdiff(c("0000", "9999")) #reserved for control and grid
+
+  #only keep projects  who have finished running ("additionality.csv" exists)
+  done_id = sapply(projects, function(x) list.files(paste0(project_dir, x)) %>% str_subset("additionality.csv") %>% length() > 0)
+  projects = projects[done_id]
+
+  #only keep projects with complete ACD values for LUC 1, 2, 3, and 4
+  full_acd_id = sapply(projects, function(x) {
+    acd = read.csv(paste0(project_dir, x, "/", x, "carbon-density.csv"))
+    Reduce("&", 1:4 %in% acd$land.use.class)
+  })
+  projects = projects[full_acd_id]
+  #1399 and 1408 might potentially be excluded due to weird results: to be investigated
+
   in_paths = paste0(project_dir, projects, "/", projects)
 
   pair_dirs = paste0(project_dir, projects, "/pairs/")
@@ -99,8 +109,9 @@ if(analysis_type == "full") {
   m_paths = paste0(in_paths, "matches.parquet")
   acd_paths = paste0(in_paths, "carbon-density.csv")
   polygon_paths = paste0("/maps/epr26/tmf-data/projects/", projects, ".geojson")
-  country = sapply(projects, function(x) filter(proj_meta, ID == str_replace(x, "a", ""))$COUNTRY)
-  t0 = sapply(projects, function(x) filter(proj_meta, ID == str_replace(x, "a", ""))$t0)
+  country = filter(proj_meta, ID %in% str_replace(projects, "a", ""))$COUNTRY
+  t0 = filter(proj_meta, ID %in% str_replace(projects, "a", ""))$t0
+  proj_name = projects
 
 } else if(analysis_type == "grid") {
 
@@ -135,9 +146,8 @@ if(analysis_type == "full") {
 } else if(analysis_type == "ac") {
 
   project_dir = "/maps/epr26/tmf_pipe_out/"
-  projects = list.files(project_dir, full = T) %>%
-    str_subset("ac\\d\\d") %>%
-    basename()
+  projects = list.files(project_dir) %>%
+    str_subset("ac\\d\\d")
   in_paths = paste0(project_dir, projects, "/", projects)
 
   pair_dirs = paste0(project_dir, projects, "/pairs/")
@@ -147,12 +157,29 @@ if(analysis_type == "full") {
   polygon_paths = paste0("/maps/epr26/tmf-data/projects/", projects, ".geojson")
   country = "Brazil"
   t0 = 2021
+  proj_name = projects
 
 }
 
-if(!exists("proj_name")) proj_name = projects
 out_path = paste0("/maps/epr26/tmf_pipe_out/out_",
                   ifelse(analysis_type == "grid", "grid_1201", analysis_type))
+
+
+# 0b. User-defined input variables ----
+
+#projects = NULL
+#pair_dirs = NULL
+#k_paths = NULL
+#m_paths = NULL
+#acd_paths = NULL
+#polygon_paths = NULL
+#country = NULL
+#t0 = NULL
+#proj_name = NULL
+#out_path = NULL
+
+
+# A. Read data ----
 
 #vector containing area (ha) of every project
 area_ha = sapply(seq_along(projects), function(i) {
@@ -195,7 +222,7 @@ setM = lapply(seq_along(projects), function(i) {
 project_var = data.frame(project = proj_name, t0 = t0, country = country, area_ha = area_ha, acd_undisturbed = acd_undisturbed)
 
 
-# A. Obtain observed additionality ----
+# B. Obtain observed additionality ----
 #additionality_out = mclapply(seq_along(projects), mc.cores = 15, function(i) {
 additionality_out = lapply(seq_along(projects), function(i) { #mclapply() does not work on Windows
   a = Sys.time()
@@ -272,7 +299,7 @@ additionality_distribution = lapply(seq_along(projects), function(i) {
 write.csv(additionality_distribution, paste0("/maps/epr26/tmf_pipe_out/additionality_distribution.csv"), row.names = F)
 
 
-# B. Predict deforestation probability of baseline pixels using logistic regression ----
+# C. Predict deforestation probability of baseline pixels using logistic regression ----
 #models fitted to K or to M are similar, so only results fitted to M are used (model_by = "M")
 var_vec = c("slope", "elevation", "access")
 var_label = c("Slope (dgree)", "Elevation (meter)", "Remoteness (minutes)")
@@ -295,6 +322,71 @@ saveRDS(project_defor_prob, paste0(out_path, "_project_defor_prob.rds"))
 
 #Output: total range of predicted baseline deforestation probability
 range_defor_prob = sapply(baseline, function(x) range(x$defor_prob)) #0 - 0.58
+
+#Output: sensitivity and specificity of each logistic regression model
+threshold = seq(0, 1, by = 0.01)
+roc_out = lapply(seq_along(predict_defor_out), function(i) {
+  # specificity = rep(NA, length(threshold))
+  # sensitivity = rep(NA, length(threshold))
+  baseline = predict_defor_out[[i]]$baseline
+  roc_baseline = roc(data = baseline, response = "defor", predictor = "defor_prob")
+  best_threshold = coords(roc_baseline, x = "best")
+  # p_roc = plot(roc_baseline)
+  # for(j in seq_along(threshold)) {
+  #   baseline$defor_pred = ifelse(baseline$defor_prob > threshold[j], 1, 0)
+  #   specificity[j] = nrow(subset(baseline, defor_pred == 0 & defor == 0)) / nrow(subset(baseline, defor == 0))
+  #   sensitivity[j] = nrow(subset(baseline, defor_pred == 1 & defor == 1)) / nrow(subset(baseline, defor == 1))
+  # }
+  df_roc = data.frame(threshold = roc_baseline$thresholds,
+                      specificity = roc_baseline$specificities,
+                      sensitivity = roc_baseline$sensitivities) %>%
+    mutate(inv_specificity = 1 - specificity)
+  return(list(roc_baseline = roc_baseline, best_threshold = best_threshold, df_roc = df_roc))
+})
+names(roc_out) = projects
+saveRDS(roc_out, paste0(out_path, "_roc_out.rds"))
+#roc_out = read_rds(paste0(out_path, "_roc_out.rds"))
+
+#Visualisation: ROC curves for each logistic model
+p_roc = lapply(seq_along(roc_out), function(i) {
+  best_threshold = roc_out[[i]]$best_threshold
+  ggplot(data = roc_out[[i]]$df_roc, aes(x = inv_specificity, y = sensitivity)) +
+    geom_line() +
+    geom_point() +
+    geom_vline(xintercept = 1 - best_threshold$specificity) +
+    geom_hline(yintercept = best_threshold$sensitivity) +
+    annotate("text", x = 0.75, y = 0.5,
+             label = paste0("AUC: ", round(auc(roc_out[[i]]$roc_baseline), 2))) +
+    annotate("text", x = 0.75, y = 0.4,
+             label = paste0("Opt. thres.:\n", signif(best_threshold$threshold, 3))) +
+    labs(x = "1 - Specificity", y = "Sensitivity", title = projects[i]) +
+    theme_classic()
+}) %>%
+  cowplot::plot_grid(plotlist = ., ncol = 4) #ROC plots
+p_roc
+ggsave(paste0(out_path, "_roc_curves.png"), p_roc,
+        width = 4000, height = 4000, units = "px", bg = "white")
+
+#Visualisation: plots of predicted deforestation probability across each environmental variable for all projects
+p_model = lapply(seq_along(predict_defor_out), function(i) {
+  glm_out = predict_defor_out[[i]]$glm_out
+  baseline = predict_defor_out[[i]]$baseline
+
+  p_model_list = vector("list", 3)
+  for(j in seq_along(var_vec)) {
+    p_model_list[[j]] = ggplot(data = baseline, aes_string(x = var_vec[j], y = defor_prob)) +
+    geom_point() +
+    labs(x = var_label[j], y = "Predicted deforestation probability")
+    theme_classic() +
+      theme(panel.grid = element_blank(),
+            axis.title = element_text(size = 16),
+            axis.text = element_text(size = 14),
+            legend.text = element_text(size = 14))
+  }
+  return(cowplot::plot_grid(plotlist = p_model_list, ncol = 3))
+}) %>%
+  cowplot::plot_grid(plotlist = ., nrow = 5, ncol = 1)
+#@@@
 
 #Visualisation: plots of difference in environmental variables between low vs high-risk pixels
 if(visualise) {
@@ -368,7 +460,7 @@ write.table(baseline_summary, paste0(out_path, "_baseline_summary.csv"), sep = "
 #baseline_summary = read.table(paste0(out_path, "_baseline_summary.csv"), header = T, sep = ",")
 
 
-# C. Calculate boostrapped baseline C loss ----
+# D. Calculate boostrapped baseline C loss ----
 meanCLoss = function(dat, ind) mean(dat[ind, ]$c_loss, na.rm = T)
 boot_n = 1000
 
@@ -412,8 +504,8 @@ c_loss_boot = lapply(c_loss_out, function(x) x$c_loss_boot) %>%
   do.call(rbind, .) %>%
   mutate(project = factor(project, levels = projects))
 rownames(c_loss_boot) = NULL
-write.table(c_loss_out, paste0(out_path, "baseline_c_loss_bootstrapped.csv"), sep = ",", row.names = F)
-#c_loss_out = read.table(paste0(out_path, "baseline_c_loss_bootstrapped.csv"), header = T, sep = ",")
+write.table(c_loss_boot, paste0(out_path, "baseline_c_loss_bootstrapped.csv"), sep = ",", row.names = F)
+#c_loss_boot = read.table(paste0(out_path, "baseline_c_loss_bootstrapped.csv"), header = T, sep = ",")
 
 #Visualisation: Figure 2: ratio between C loss of high-risk pixels in baseline vs. in the entire baseline
 if(visualise) {
@@ -457,7 +549,7 @@ if(visualise) {
 }
 
 
-# D. Generate additionality forecast and estimate overclaiming risk ----
+# E. Generate additionality forecast and estimate overclaiming risk ----
 scenarios = c(100, 75, 50, 25)
 forecast_summ = lapply(c_loss_out, function(x) {
   val = subset(x$c_loss_boot, type == "all")$val
@@ -515,21 +607,22 @@ if(visualise) {
     ungroup() %>%
     pivot_wider(names_from = "Type", values_from = mean)
 
-  p_forecast_obs_mean = ggplot(data = df_forecast_obs_mean, aes(x = Forecast, y = Observed)) +
-    geom_point() +
-    geom_abline(intercept = 0, slope = 1, linetype = 3) +
-    geom_hline(yintercept = 0, linetype = 3) +
-    geom_text(aes(x = Forecast, y = Observed + 0.025, label = project)) +
-    scale_x_continuous(limits = c(0, 0.75)) +
-    scale_y_continuous(limits = c(-0.5, 1.25)) +
-    labs(x = "Mean forecasted annual additionality (Mg/ha/yr)", y = "Mean observed annual additionality (Mg/ha/yr)") +
-    theme_bw() +
-    theme(panel.grid = element_blank(),
-          axis.title = element_text(size = 16),
-          axis.text = element_text(size = 14))
-  ggsave(paste0(out_path, "_forecast_obs_mean.png"), width = 3000, height = 3000, units = "px")
+  for(x in scenarios) {
+    p_forecast_obs_mean = ggplot(data = df_forecast_obs_mean, aes(x = Forecast * x / 100, y = Observed)) +
+      geom_point() +
+      geom_abline(intercept = 0, slope = 1, linetype = 3) +
+      geom_hline(yintercept = 0, linetype = 3) +
+      geom_text(aes(x = Forecast * x / 100, y = Observed + 0.025, label = project)) +
+      scale_x_continuous(limits = c(0, 0.75)) +
+      scale_y_continuous(limits = c(-1.5, 5.5)) +
+      labs(x = "Mean forecasted annual additionality (Mg/ha/yr)", y = "Mean observed annual additionality (Mg/ha/yr)") +
+      theme_bw() +
+      theme(panel.grid = element_blank(),
+            axis.title = element_text(size = 16),
+            axis.text = element_text(size = 14))
+    ggsave(paste0(out_path, "_forecast_obs_mean_", x, ".png"), width = 3000, height = 3000, units = "px")
+  }
 }
-
 
 #Visualisation: Figure 4: over-claiming risk vs forecast under different scenarios
 if(visualise) {
