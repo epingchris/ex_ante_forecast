@@ -23,13 +23,12 @@ library(boot) #boot::boot
 options(dplyr.summarise.inform = FALSE)
 
 #Load pre-defined functions
-fillNA = function(x) if (length(x) == 0) return(NA) else return(x) #turn empty object as NA
-findLUCC = function(x) sum(x %in% c("1_2", "1_3", "1_4")) / length(x) #find LUC transitions from undisturbed to disturbed
+#fillNA = function(x) if (length(x) == 0) return(NA) else return(x) #turn empty object as NA
+#findLUCC = function(x) sum(x %in% c("1_2", "1_3", "1_4")) / length(x) #find LUC transitions from undisturbed to disturbed
 
 source("functions.r") #cpc_rename, tmfemi_reformat, simulate_area_series, make_area_series, assess_balance, make_match_formula
 source("AdditionalityPair.r")
 source("PredictDefor.r")
-source("CalcExAnte.r")
 
 #Load user-defined functions that Tom wrote
 #sapply(list.files(paste0("/home/tws36/4c_evaluations/R"), full = T, pattern = ".R$"), source)
@@ -90,7 +89,7 @@ if(analysis_type == "full") {
     str_subset("ac", negate = T) %>%
     setdiff(c("0000", "9999")) #reserved for control and grid
 
-  #only keep projects  who have finished running ("additionality.csv" exists)
+  #only keep projects who have finished running ("additionality.csv" exists)
   done_id = sapply(projects, function(x) list.files(paste0(project_dir, x)) %>% str_subset("additionality.csv") %>% length() > 0)
   projects = projects[done_id]
 
@@ -109,9 +108,9 @@ if(analysis_type == "full") {
   m_paths = paste0(in_paths, "matches.parquet")
   acd_paths = paste0(in_paths, "carbon-density.csv")
   polygon_paths = paste0("/maps/epr26/tmf-data/projects/", projects, ".geojson")
-  country = filter(proj_meta, ID %in% str_replace(projects, "a", ""))$COUNTRY
-  t0 = filter(proj_meta, ID %in% str_replace(projects, "a", ""))$t0
-  proj_name = projects
+  country = proj_meta[match(str_replace(projects, "a", ""), proj_meta$ID), ]$COUNTRY
+  t0 = proj_meta[match(str_replace(projects, "a", ""), proj_meta$ID), ]$t0
+  proj_name = str_replace(projects, "a", "")
 
 } else if(analysis_type == "grid") {
 
@@ -299,194 +298,39 @@ additionality_distribution = lapply(seq_along(projects), function(i) {
 write.csv(additionality_distribution, paste0("/maps/epr26/tmf_pipe_out/additionality_distribution.csv"), row.names = F)
 
 
-# C. Predict deforestation probability of baseline pixels using logistic regression ----
-#models fitted to K or to M are similar, so only results fitted to M are used (model_by = "M")
-var_vec = c("slope", "elevation", "access")
-var_label = c("Slope (dgree)", "Elevation (meter)", "Remoteness (minutes)")
-predict_defor_out = lapply(seq_along(projects), function(i) PredictDefor(proj_id = projects[i], t0 = t0[i], acd = acd[[i]], K = setK[[i]], M = setM[[i]]))
-names(predict_defor_out) = projects
-saveRDS(predict_defor_out, paste0(out_path, "_predict_defor_out.rds"))
-#predict_defor_out = read_rds(paste0(out_path, "_predict_defor_out.rds"))
+# C. Calculate boostrapped baseline C loss ----
+meanCLoss = function(dat, ind) mean(dat[ind, ]$c_loss, na.rm = T)
+boot_n = 1000
 
-#Output: predicted baseline deforestation probability
-baseline = lapply(predict_defor_out, function(x) x$baseline)
+baseline = lapply(seq_along(projects), function(i) {
+  a = Sys.time()
+  acd_i = acd[[i]]
+  M = setM[[i]] %>%
+    dplyr::select(-starts_with("luc_")) %>%
+    dplyr::select(-starts_with("cpc"))
+  if(nrow(M) > 250000) M = M[sample(nrow(M), 250000), ]
+
+  baseline_i = M %>%
+    mutate(acd10 = acd_i$carbon.density[match(luc10, acd_i$land.use.class)],
+           acd0 = acd_i$carbon.density[match(luc0, acd_i$land.use.class)],
+           c_loss = (acd10 - acd0) / 10)
+  b = Sys.time()
+  cat(projects[i], ":", b - a, "\n")
+  return(baseline_i)
+})
 names(baseline) = projects
 saveRDS(baseline, paste0(out_path, "_baseline.rds"))
 #baseline = read_rds(paste0(out_path, "_baseline.rds"))
 
-#Output: predicted project deforestation probability
-project_defor_prob = lapply(predict_defor_out, function(x) x$project_defor_prob)
-names(project_defor_prob) = projects
-saveRDS(project_defor_prob, paste0(out_path, "_project_defor_prob.rds"))
-#project_defor_prob = read_rds(paste0(out_path, "_project_defor_prob.rds"))
-
-#Output: total range of predicted baseline deforestation probability
-range_defor_prob = sapply(baseline, function(x) range(x$defor_prob)) #0 - 0.58
-
-#Output: sensitivity and specificity of each logistic regression model
-threshold = seq(0, 1, by = 0.01)
-roc_out = lapply(seq_along(predict_defor_out), function(i) {
-  # specificity = rep(NA, length(threshold))
-  # sensitivity = rep(NA, length(threshold))
-  baseline = predict_defor_out[[i]]$baseline
-  roc_baseline = roc(data = baseline, response = "defor", predictor = "defor_prob")
-  best_threshold = coords(roc_baseline, x = "best")
-  # p_roc = plot(roc_baseline)
-  # for(j in seq_along(threshold)) {
-  #   baseline$defor_pred = ifelse(baseline$defor_prob > threshold[j], 1, 0)
-  #   specificity[j] = nrow(subset(baseline, defor_pred == 0 & defor == 0)) / nrow(subset(baseline, defor == 0))
-  #   sensitivity[j] = nrow(subset(baseline, defor_pred == 1 & defor == 1)) / nrow(subset(baseline, defor == 1))
-  # }
-  df_roc = data.frame(threshold = roc_baseline$thresholds,
-                      specificity = roc_baseline$specificities,
-                      sensitivity = roc_baseline$sensitivities) %>%
-    mutate(inv_specificity = 1 - specificity)
-  return(list(roc_baseline = roc_baseline, best_threshold = best_threshold, df_roc = df_roc))
-})
-names(roc_out) = projects
-saveRDS(roc_out, paste0(out_path, "_roc_out.rds"))
-#roc_out = read_rds(paste0(out_path, "_roc_out.rds"))
-
-#Visualisation: ROC curves for each logistic model
-p_roc = lapply(seq_along(roc_out), function(i) {
-  best_threshold = roc_out[[i]]$best_threshold
-  ggplot(data = roc_out[[i]]$df_roc, aes(x = inv_specificity, y = sensitivity)) +
-    geom_line() +
-    geom_point() +
-    geom_vline(xintercept = 1 - best_threshold$specificity) +
-    geom_hline(yintercept = best_threshold$sensitivity) +
-    annotate("text", x = 0.75, y = 0.5,
-             label = paste0("AUC: ", round(auc(roc_out[[i]]$roc_baseline), 2))) +
-    annotate("text", x = 0.75, y = 0.4,
-             label = paste0("Opt. thres.:\n", signif(best_threshold$threshold, 3))) +
-    labs(x = "1 - Specificity", y = "Sensitivity", title = projects[i]) +
-    theme_classic()
-}) %>%
-  cowplot::plot_grid(plotlist = ., ncol = 4) #ROC plots
-p_roc
-ggsave(paste0(out_path, "_roc_curves.png"), p_roc,
-        width = 4000, height = 4000, units = "px", bg = "white")
-
-#Visualisation: plots of predicted deforestation probability across each environmental variable for all projects
-p_model = lapply(seq_along(predict_defor_out), function(i) {
-  glm_out = predict_defor_out[[i]]$glm_out
-  baseline = predict_defor_out[[i]]$baseline
-
-  p_model_list = vector("list", 3)
-  for(j in seq_along(var_vec)) {
-    p_model_list[[j]] = ggplot(data = baseline, aes_string(x = var_vec[j], y = defor_prob)) +
-    geom_point() +
-    labs(x = var_label[j], y = "Predicted deforestation probability")
-    theme_classic() +
-      theme(panel.grid = element_blank(),
-            axis.title = element_text(size = 16),
-            axis.text = element_text(size = 14),
-            legend.text = element_text(size = 14))
-  }
-  return(cowplot::plot_grid(plotlist = p_model_list, ncol = 3))
-}) %>%
-  cowplot::plot_grid(plotlist = ., nrow = 5, ncol = 1)
-#@@@
-
-#Visualisation: plots of difference in environmental variables between low vs high-risk pixels
-if(visualise) {
-  p_slope_by_risk = lapply(predict_defor_out, function(x) x$plotlist$slope) %>%
-    cowplot::plot_grid(plotlist = ., ncol = 4)
-  ggsave(paste0(out_path, "_var_by_risk_slope.png"), p_slope_by_risk,
-        width = 4000, height = 4000, units = "px", bg = "white")
-  p_elevation_by_risk = lapply(predict_defor_out, function(x) x$plotlist$elevation) %>%
-    cowplot::plot_grid(plotlist = ., ncol = 4)
-  ggsave(paste0(out_path, "_var_by_risk_elevation.png"), p_elevation_by_risk,
-        width = 4000, height = 4000, units = "px", bg = "white")
-  p_access_by_risk = lapply(predict_defor_out, function(x) x$plotlist$access) %>%
-    cowplot::plot_grid(plotlist = ., ncol = 4)
-  ggsave(paste0(out_path, "_var_by_risk_access.png"), p_access_by_risk,
-        width = 4000, height = 4000, units = "px", bg = "white")
-}
-
-#Visualisation: Figure 1: plot of difference in environmental variables between low vs high-risk pixels for every project
-if(visualise) {
-  var_max = c(25, 3000, 2000)
-  text_adjust = c(1, 100, 100)
-  for(i in seq_along(var_vec)) {
-    var_i = var_vec[i]
-    var_label_i = var_label[i]
-    df_defor_prob = lapply(seq_along(predict_defor_out), function(j) {
-      out_j = predict_defor_out[[j]]$baseline
-      out_df = data.frame(all = mean(out_j %>% pull(all_of(var_i)), na.rm = T),
-                          low = mean(filter(out_j, risk == "low") %>% pull(all_of(var_i)), na.rm = T),
-                          high = mean(filter(out_j, risk == "high") %>% pull(all_of(var_i)), na.rm = T)) %>%
-        mutate(max = apply(., 1, max),
-              project = projects[j])
-      return(out_df)
-    }) %>%
-      do.call(rbind, .) %>%
-      mutate(project = factor(project, levels = projects),
-            rank = rank(all))
-
-    ggplot(data = df_defor_prob, aes(x = rank)) +
-      geom_point(aes(y = low, color = "blue"), size = 2) +
-      geom_point(aes(y = high, color = "red"), size = 2) +
-      geom_point(aes(y = all, color = "black"), size = 1) +
-      geom_segment(aes(y = all, xend = rank, yend = low), color = "blue") +
-      geom_segment(aes(y = all, xend = rank, yend = high), color = "red") +
-      geom_text(aes(x = rank, y = max + text_adjust[i], label = project), size = 4) +
-      scale_color_manual(name = "Pixel type", values = c("black", "blue", "red"),
-                        labels = c("All", "Low-risk (< 1%)", "High-risk (>= 1%)")) +
-      labs(x = "Project", y = var_label_i) +
-      theme_classic() +
-      theme(panel.grid = element_blank(),
-            legend.position = "bottom",
-            legend.direction = "vertical",
-            axis.title = element_text(size = 16),
-            axis.text = element_text(size = 14),
-            axis.text.x = element_blank(),
-            axis.ticks.x = element_blank(),
-            legend.text = element_text(size = 14))
-    ggsave(paste0(out_path, "_all_var_by_risk_", var_i, ".png"), width = 2000, height = 2000, unit = "px")
-  }
-}
-
-#Output: basic information about the baseline
-baseline_summary = lapply(seq_along(projects), function(i) {
-  data.frame(project = projects[i],
-             baseline_area = nrow(predict_defor_out[[i]]$baseline),
-             low_risk_ratio = predict_defor_out[[i]]$low_risk_ratio[1]) %>%
-    cbind(., t(data.frame(predict_defor_out[[i]]$effects)))
-}) %>%
-  do.call(rbind, .)
-rownames(baseline_summary) = NULL
-write.table(baseline_summary, paste0(out_path, "_baseline_summary.csv"), sep = ",", row.names = F)
-#baseline_summary = read.table(paste0(out_path, "_baseline_summary.csv"), header = T, sep = ",")
-
-
-# D. Calculate boostrapped baseline C loss ----
-meanCLoss = function(dat, ind) mean(dat[ind, ]$c_loss, na.rm = T)
-boot_n = 1000
-
 c_loss_out = lapply(seq_along(projects), function(i) {
   a = Sys.time()
-  baseline_i = baseline[[i]]
-  baseline_c_loss = boot::boot(baseline_i, meanCLoss, R = boot_n) #in all pixels; around 700 seconds
-
-  baseline_high_risk = filter(baseline_i, risk == "high")
-  if(nrow(baseline_high_risk) == 0) {
-    baseline_long = data.frame(Type = "baseline_c_loss", Value = as.vector(baseline_c_loss$t))
-    return(list(ses = NULL, baseline_long = baseline_long))
-  }
-  baseline_c_loss_high_risk = boot::boot(baseline_high_risk, meanCLoss, R = boot_n) #only in high-risk pixels; around 700 seconds
-
-  #calculate standardised effect size
-  ses = (mean(baseline_c_loss_high_risk$t) - mean(baseline_c_loss$t)) / sd(baseline_c_loss$t)
-
-  #collate data
-  c_loss_boot = rbind(data.frame(type = "all", val = as.vector(baseline_c_loss$t)),
-                      data.frame(type = "high_risk", val = as.vector(baseline_c_loss_high_risk$t))) %>%
-    data.frame(project = projects[i])
-
+  baseline_i = baseline[[i]] %>%
+    dplyr::select(c_loss)
+  c_loss_boot = data.frame(project = projects[i],
+                           val = as.vector(boot::boot(baseline_i, meanCLoss, R = boot_n)$t)) #around 23 seconds per run
   b = Sys.time()
-  cat(projects[i], b - a, "\n")
-  return(list(ses = ses, c_loss_boot = c_loss_boot))
+  cat(projects[i], ":", b - a, "\n")
+  return(c_loss_boot)
 })
 names(c_loss_out) = projects
 saveRDS(c_loss_out, paste0(out_path, "_c_loss_out.rds"))
@@ -549,7 +393,7 @@ if(visualise) {
 }
 
 
-# E. Generate additionality forecast and estimate overclaiming risk ----
+# D. Generate additionality forecast and estimate overclaiming risk ----
 scenarios = c(100, 75, 50, 25)
 forecast_summ = lapply(c_loss_out, function(x) {
   val = subset(x$c_loss_boot, type == "all")$val

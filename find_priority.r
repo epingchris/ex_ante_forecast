@@ -33,10 +33,8 @@ exclude_country = c("China", "Uruguay", "United States", "Argentina", "Pakistan"
 proj_candidate = proj_meta %>%
   filter(ID %in% candidates_id) %>%
   filter(COUNTRY %in% country_tmf) %>%
-  filter(COUNTRY %in% exclude_country == F)
+  filter(COUNTRY %in% exclude_country == F) %>%
+  filter(t0 >= 2009 & t0 < 2018) # projects with t0 in [2009, 2017], in order to have available luc columns
 
-#prioritise adding projects with t0 between 2007 and 2018 (especially 2013, 2015, 2017)
 #table(subset(proj_meta, ID %in% projects)$t0)
-proj_priority = proj_candidate %>%
-  filter(t0 >= 2004 & t0 < 2018) %>%
-  filter(t0 %in% c(2004, 2005, 2006, 2008, 2012, 2014, 2015, 2016, 2017))
+proj_priority = filter(proj_candidate, t0 %in% c(2012, 2014, 2015, 2016, 2017)) #priortise running projects in these years
