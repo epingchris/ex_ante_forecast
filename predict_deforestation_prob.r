@@ -376,3 +376,57 @@ baseline_summary = lapply(seq_along(projects), function(i) {
 rownames(baseline_summary) = NULL
 write.table(baseline_summary, paste0(out_path, "_baseline_summary.csv"), sep = ",", row.names = F)
 #baseline_summary = read.table(paste0(out_path, "_baseline_summary.csv"), header = T, sep = ",")
+
+
+
+#@@@After bootstrapping@@@#
+
+
+#Output: standardised effect size by using only high-risk pixels instead of all pixels
+df_ses = data.frame(project = projects, ses = sapply(c_loss_out, function(x) x$ses)) %>%
+  mutate(ses_text = paste0("SES: ", round(ses, 2)))
+rownames(df_ses) = NULL
+write.table(df_ses, paste0(out_path, "baseline_ses_high_vs_all.csv"), sep = ",", row.names = F)
+#df_ses = read.table(paste0(out_path, "baseline_ses_high_vs_all.csv"), header = T, sep = ",")
+
+
+#Visualisation: Figure 2: ratio between C loss of high-risk pixels in baseline vs. in the entire baseline
+if(visualise) {
+  df_c_loss_ratio = c_loss_boot %>%
+    group_by(project, type) %>%
+    summarise(mean = mean(val)) %>%
+    ungroup() %>%
+    pivot_wider(names_from = "type", values_from = "mean") %>%
+    mutate(ratio = high_risk / all)
+
+  p_c_loss_ratio = ggplot(data = df_c_loss_ratio, aes(x = all, y = ratio)) +
+    geom_point() +
+    geom_text(aes(x = all, y = ratio + 0.2, label = project)) +
+    labs(x = "Baseline annual C loss rate (Mg/ha/yr)", y = "Ratio between C loss rate in high-risk pixels vs. all pixels") +
+    theme_classic()
+  ggsave(paste0(out_path, "_c_loss_ratio.png"), width = 2000, height = 2000, unit = "px")
+}
+
+#Visualisation: Figure S3: baseline C loss in all vs high-risk pixels
+if(visualise) {
+  y_max = max(c_loss_boot$val)
+  p_c_loss_by_risk = ggplot(data = c_loss_boot, aes(x = type, y = val)) +
+    geom_boxplot(aes(color = type)) +
+    facet_wrap(vars(project), ncol = 5) +
+    ggpubr::stat_compare_means(method = "t.test", aes(label = ..p.signif..),
+                              label.x = 1.5, label.y = y_max * 1.1, size = 5) +
+    geom_text(data = df_ses,
+              mapping = aes(x = 1.5, y = y_max * 1.2, label = ses_text), size = 5) +
+    scale_x_discrete(labels = c("All", "High-risk")) +
+    scale_y_continuous(limits = c(0, y_max * 1.3)) +
+    scale_color_manual(values = c("red", "blue"),
+                        labels = c("All", "High-risk")) +
+    labs(x = "", y = "Annual carbon loss (Mg/ha/yr)") +
+    theme_bw() +
+    theme(panel.grid = element_blank(),
+          legend.position = "none",
+          strip.text = element_text(size = 20),
+          axis.title = element_text(size = 16),
+          axis.text = element_text(size = 14))
+  ggsave(paste0(out_path, "_baseline_c_loss_by_risk.png"), width = 4000, height = 4000, units = "px")
+}

@@ -322,90 +322,38 @@ names(baseline) = projects
 saveRDS(baseline, paste0(out_path, "_baseline.rds"))
 #baseline = read_rds(paste0(out_path, "_baseline.rds"))
 
-c_loss_out = lapply(seq_along(projects), function(i) {
+c_loss_boot = lapply(seq_along(projects), function(i) {
   a = Sys.time()
   baseline_i = baseline[[i]] %>%
     dplyr::select(c_loss)
-  c_loss_boot = data.frame(project = projects[i],
+  bootstrap_i = data.frame(project = projects[i],
                            val = as.vector(boot::boot(baseline_i, meanCLoss, R = boot_n)$t)) #around 23 seconds per run
   b = Sys.time()
   cat(projects[i], ":", b - a, "\n")
-  return(c_loss_boot)
+  return(bootstrap_i)
 })
-names(c_loss_out) = projects
-saveRDS(c_loss_out, paste0(out_path, "_c_loss_out.rds"))
-#c_loss_out = read_rds(paste0(out_path, "_c_loss_out.rds"))
-
-#Output: standardised effect size by using only high-risk pixels instead of all pixels
-df_ses = data.frame(project = projects, ses = sapply(c_loss_out, function(x) x$ses)) %>%
-  mutate(ses_text = paste0("SES: ", round(ses, 2)))
-rownames(df_ses) = NULL
-write.table(df_ses, paste0(out_path, "baseline_ses_high_vs_all.csv"), sep = ",", row.names = F)
-#df_ses = read.table(paste0(out_path, "baseline_ses_high_vs_all.csv"), header = T, sep = ",")
+names(c_loss_boot) = projects
 
 #Output: bootstrapped baseline C loss values for all projects
-c_loss_boot = lapply(c_loss_out, function(x) x$c_loss_boot) %>%
+saveRDS(c_loss_boot, paste0(out_path, "_baseline_c_loss_bootstrapped.rds"))
+#c_loss_boot = read_rds(paste0(out_path, "_baseline_c_loss_bootstrapped.rds"))
+
+c_loss_boot_df = c_loss_boot %>%
   do.call(rbind, .) %>%
   mutate(project = factor(project, levels = projects))
-rownames(c_loss_boot) = NULL
-write.table(c_loss_boot, paste0(out_path, "baseline_c_loss_bootstrapped.csv"), sep = ",", row.names = F)
-#c_loss_boot = read.table(paste0(out_path, "baseline_c_loss_bootstrapped.csv"), header = T, sep = ",")
-
-#Visualisation: Figure 2: ratio between C loss of high-risk pixels in baseline vs. in the entire baseline
-if(visualise) {
-  df_c_loss_ratio = c_loss_boot %>%
-    group_by(project, type) %>%
-    summarise(mean = mean(val)) %>%
-    ungroup() %>%
-    pivot_wider(names_from = "type", values_from = "mean") %>%
-    mutate(ratio = high_risk / all)
-
-  p_c_loss_ratio = ggplot(data = df_c_loss_ratio, aes(x = all, y = ratio)) +
-    geom_point() +
-    geom_text(aes(x = all, y = ratio + 0.2, label = project)) +
-    labs(x = "Baseline annual C loss rate (Mg/ha/yr)", y = "Ratio between C loss rate in high-risk pixels vs. all pixels") +
-    theme_classic()
-  ggsave(paste0(out_path, "_c_loss_ratio.png"), width = 2000, height = 2000, unit = "px")
-}
-
-#Visualisation: Figure S3: baseline C loss in all vs high-risk pixels
-if(visualise) {
-  y_max = max(c_loss_boot$val)
-  p_c_loss_by_risk = ggplot(data = c_loss_boot, aes(x = type, y = val)) +
-    geom_boxplot(aes(color = type)) +
-    facet_wrap(vars(project), ncol = 5) +
-    ggpubr::stat_compare_means(method = "t.test", aes(label = ..p.signif..),
-                              label.x = 1.5, label.y = y_max * 1.1, size = 5) +
-    geom_text(data = df_ses,
-              mapping = aes(x = 1.5, y = y_max * 1.2, label = ses_text), size = 5) +
-    scale_x_discrete(labels = c("All", "High-risk")) +
-    scale_y_continuous(limits = c(0, y_max * 1.3)) +
-    scale_color_manual(values = c("red", "blue"),
-                        labels = c("All", "High-risk")) +
-    labs(x = "", y = "Annual carbon loss (Mg/ha/yr)") +
-    theme_bw() +
-    theme(panel.grid = element_blank(),
-          legend.position = "none",
-          strip.text = element_text(size = 20),
-          axis.title = element_text(size = 16),
-          axis.text = element_text(size = 14))
-  ggsave(paste0(out_path, "_baseline_c_loss_by_risk.png"), width = 4000, height = 4000, units = "px")
-}
+write.table(c_loss_boot_df, paste0(out_path, "_baseline_c_loss_bootstrapped.csv"), sep = ",", row.names = F)
+#c_loss_boot_df = read.table(paste0(out_path, "_baseline_c_loss_bootstrapped.csv"), header = T, sep = ",")
 
 
-# D. Generate additionality forecast and estimate overclaiming risk ----
+# D. Generate additionality forecast and estimate project effectiveness ----
 scenarios = c(100, 75, 50, 25)
-forecast_summ = lapply(c_loss_out, function(x) {
-  val = subset(x$c_loss_boot, type == "all")$val
-  val_mean = mean(val, na.rm = T) * scenarios / 100
-  val_ci = (qt(p = 0.975, df = boot_n - 1) * sd(val, na.rm = T) / sqrt(boot_n)) * scenarios / 100
-  column_order = c(rbind(paste0("mean_", scenarios), paste0("ci_", scenarios)))
-  out = data.frame(mean = val_mean,
-                   ci = val_ci,
-                   scenario = scenarios) %>%
-    pivot_wider(names_from = scenario, values_from = c(mean, ci), names_sep = "_") %>%
-    dplyr::select(all_of(column_order))
-  return(out)
+forecast_summ = lapply(seq_along(projects), function(i) {
+  val = c_loss_boot[[i]]$val
+  val_mean = mean(val, na.rm = T)
+  val_ci = (qt(p = 0.975, df = boot_n - 1) * sd(val, na.rm = T) / sqrt(boot_n))
+  out_df = data.frame(mean = val_mean, ci) %>%
+    mutate(ci_upper = mean + ci, ci_lower = mean - ci)
+  return(out_df)
 }) %>%
   do.call(rbind, .) %>%
   mutate_all(function(x) signif(x, 3)) %>%
@@ -418,15 +366,15 @@ write.table(forecast_summ, paste0(out_path, "_forecast_summ.csv"), sep = ",", co
 if(visualise) {
   df_forecast_obs = lapply(seq_along(projects), function(i) {
     area = project_var$area_ha[i]
-    rbind(data.frame(Type = "Forecast",
-                    Value = filter(c_loss_out[[i]]$c_loss_boot, type == "all")$val),
-          data.frame(Type = "Observed",
-                    Value = filter(additionality_estimates[[i]], started)$additionality / area)) %>%
+    rbind(data.frame(type = "Forecast",
+                     value = filter(c_loss_boot_df, project = projects[i])$val),
+          data.frame(type = "Observed",
+                     value = filter(additionality_estimates[[i]], started)$additionality / area)) %>%
       mutate(project = projects[i])
   }) %>% do.call(rbind, .)
 
-  p_forecast_obs = ggplot(data = df_forecast_obs, aes(x = Type, y = Value)) +
-    geom_boxplot(aes(color = Type)) +
+  p_forecast_obs = ggplot(data = df_forecast_obs, aes(x = type, y = value)) +
+    geom_boxplot(aes(color = type)) +
     geom_hline(yintercept = 0, linetype = 3) +
     facet_wrap(vars(project), ncol = 5) +
     scale_x_discrete(labels = c("Forecast", "Observed")) +
@@ -447,12 +395,11 @@ if(visualise) {
 if(visualise) {
   df_forecast_obs_mean = df_forecast_obs %>%
     group_by(Type, project) %>%
-    summarise(mean = mean(Value)) %>%
+    summarise(mean = mean(value)) %>%
     ungroup() %>%
-    pivot_wider(names_from = "Type", values_from = mean)
+    pivot_wider(names_from = "type", values_from = mean)
 
-  for(x in scenarios) {
-    p_forecast_obs_mean = ggplot(data = df_forecast_obs_mean, aes(x = Forecast * x / 100, y = Observed)) +
+  p_forecast_obs_mean = ggplot(data = df_forecast_obs_mean, aes(x = Forecast, y = Observed)) +
       geom_point() +
       geom_abline(intercept = 0, slope = 1, linetype = 3) +
       geom_hline(yintercept = 0, linetype = 3) +
@@ -464,8 +411,7 @@ if(visualise) {
       theme(panel.grid = element_blank(),
             axis.title = element_text(size = 16),
             axis.text = element_text(size = 14))
-    ggsave(paste0(out_path, "_forecast_obs_mean_", x, ".png"), width = 3000, height = 3000, units = "px")
-  }
+    ggsave(paste0(out_path, "_forecast_obs_mean.png"), width = 3000, height = 3000, units = "px")
 }
 
 #Visualisation: Figure 4: over-claiming risk vs forecast under different scenarios
