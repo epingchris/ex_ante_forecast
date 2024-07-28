@@ -176,7 +176,7 @@ out_path = paste0("/maps/epr26/tmf_pipe_out/out_",
 #t0 = NULL
 #proj_name = NULL
 #out_path = NULL
-
+#visualise = FALSE
 
 # A. Read data ----
 
@@ -346,12 +346,11 @@ write.table(c_loss_boot_df, paste0(out_path, "_baseline_c_loss_bootstrapped.csv"
 
 
 # D. Generate additionality forecast and estimate project effectiveness ----
-scenarios = c(100, 75, 50, 25)
 forecast_summ = lapply(seq_along(projects), function(i) {
   val = c_loss_boot[[i]]$val
   val_mean = mean(val, na.rm = T)
   val_ci = (qt(p = 0.975, df = boot_n - 1) * sd(val, na.rm = T) / sqrt(boot_n))
-  out_df = data.frame(mean = val_mean, ci) %>%
+  out_df = data.frame(mean = val_mean, ci = val_ci) %>%
     mutate(ci_upper = mean + ci, ci_lower = mean - ci)
   return(out_df)
 }) %>%
@@ -362,12 +361,12 @@ forecast_summ = lapply(seq_along(projects), function(i) {
 #Output: additionality forecast under different scenarios
 write.table(forecast_summ, paste0(out_path, "_forecast_summ.csv"), sep = ",", col.names = NA, row.names = T)
 
-#Visualisation: Figure S4: forecast vs. observed for each project
+#Visualisation: Figure S4: side-by-side comparison of forecast vs. observed additionality distributions for each project
 if(visualise) {
   df_forecast_obs = lapply(seq_along(projects), function(i) {
     area = project_var$area_ha[i]
     rbind(data.frame(type = "Forecast",
-                     value = filter(c_loss_boot_df, project = projects[i])$val),
+                     value = c_loss_boot[[i]]$val),
           data.frame(type = "Observed",
                      value = filter(additionality_estimates[[i]], started)$additionality / area)) %>%
       mutate(project = projects[i])
