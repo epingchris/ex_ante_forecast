@@ -372,7 +372,7 @@ if(visualise) {
       mutate(project = projects[i])
   }) %>% do.call(rbind, .)
 
-  p_forecast_obs = ggplot(data = subset(df_forecast_obs, project != "674"), aes(x = type, y = value)) +
+  p_forecast_obs = ggplot(data = subset(df_forecast_obs, project != "934"), aes(x = type, y = value)) +
     geom_boxplot(aes(color = type)) +
     geom_hline(yintercept = 0, linetype = 3) +
     facet_wrap(vars(project), ncol = 5) +
@@ -387,7 +387,7 @@ if(visualise) {
           axis.title = element_text(size = 16),
           axis.text = element_text(size = 14),
           axis.text.x = element_text(angle = 90))
-  ggsave(paste0(out_path, "_forecast_obs_exclude_674.png"), width = 3000, height = 3000, units = "px")
+  ggsave(paste0(out_path, "_forecast_obs_exclude_934.png"), width = 3000, height = 3000, units = "px")
 }
 
 #Visualisation: Figure 3: mean forecast vs mean observed
