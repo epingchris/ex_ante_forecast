@@ -206,7 +206,8 @@ setK = lapply(seq_along(projects), function(i) {
   luc_t_10 = paste0("luc_", t0[i] - 10)
   luc_t0 = paste0("luc_", t0[i])
   read_parquet(k_paths[i]) %>%
-    rename(luc10 = all_of(luc_t_10), luc0 = all_of(luc_t0), k_ecoregion = ecoregion)
+    rename(luc10 = all_of(luc_t_10), luc0 = all_of(luc_t0), k_ecoregion = ecoregion) %>%
+    as.data.frame()
 })
 
 #list containing set M of every project
@@ -214,7 +215,8 @@ setM = lapply(seq_along(projects), function(i) {
   luc_t_10 = paste0("luc_", t0[i] - 10)
   luc_t0 = paste0("luc_", t0[i])
   read_parquet(m_paths[i]) %>%
-    rename(luc10 = all_of(luc_t_10), luc0 = all_of(luc_t0), s_ecoregion = ecoregion)
+    rename(luc10 = all_of(luc_t_10), luc0 = all_of(luc_t0), s_ecoregion = ecoregion) %>%
+    as.data.frame()
 })
 
 #data frame of project-level variables
@@ -298,16 +300,14 @@ additionality_distribution = lapply(seq_along(projects), function(i) {
 write.csv(additionality_distribution, paste0("/maps/epr26/tmf_pipe_out/additionality_distribution.csv"), row.names = F)
 
 
-# C. Calculate boostrapped baseline C loss ----
-meanCLoss = function(dat, ind) mean(dat[ind, ]$c_loss, na.rm = T)
-boot_n = 1000
-
+# C. Get baseline ----
 baseline = lapply(seq_along(projects), function(i) {
   a = Sys.time()
   acd_i = acd[[i]]
   M = setM[[i]] %>%
     dplyr::select(-starts_with("luc_")) %>%
-    dplyr::select(-starts_with("cpc"))
+    dplyr::select(-starts_with("cpc")) %>%
+    as.data.frame()
   if(nrow(M) > 250000) M = M[sample(nrow(M), 250000), ]
 
   baseline_i = M %>%
@@ -322,12 +322,18 @@ names(baseline) = projects
 saveRDS(baseline, paste0(out_path, "_baseline.rds"))
 #baseline = read_rds(paste0(out_path, "_baseline.rds"))
 
+
+# D. Bootstrapping ----
+BootMean = function(dat, ind) mean(dat[ind, ], na.rm = T)
+boot_n = 1000
+
+#bootstrapped mean of baseline C loss
 c_loss_boot = lapply(seq_along(projects), function(i) {
   a = Sys.time()
   baseline_i = baseline[[i]] %>%
     dplyr::select(c_loss)
   bootstrap_i = data.frame(project = projects[i],
-                           val = as.vector(boot::boot(baseline_i, meanCLoss, R = boot_n)$t)) #around 23 seconds per run
+                           val = as.vector(boot::boot(baseline_i, BootMean, R = boot_n)$t)) #around 23 seconds per run
   b = Sys.time()
   cat(projects[i], ":", b - a, "\n")
   return(bootstrap_i)
@@ -335,134 +341,176 @@ c_loss_boot = lapply(seq_along(projects), function(i) {
 names(c_loss_boot) = projects
 
 #Output: bootstrapped baseline C loss values for all projects
-saveRDS(c_loss_boot, paste0(out_path, "_baseline_c_loss_bootstrapped.rds"))
-#c_loss_boot = read_rds(paste0(out_path, "_baseline_c_loss_bootstrapped.rds"))
+saveRDS(c_loss_boot, paste0(out_path, "_bootstrapped_base_c_loss.rds"))
+#c_loss_boot = read_rds(paste0(out_path, "_bootstrapped_base_c_loss.rds"))
 
-c_loss_boot_df = c_loss_boot %>%
-  do.call(rbind, .) %>%
-  mutate(project = factor(project, levels = projects))
-write.table(c_loss_boot_df, paste0(out_path, "_baseline_c_loss_bootstrapped.csv"), sep = ",", row.names = F)
-#c_loss_boot_df = read.table(paste0(out_path, "_baseline_c_loss_bootstrapped.csv"), header = T, sep = ",")
+#bootstrapped mean of observed additionality
+obs_add_boot = lapply(seq_along(projects), function(i) {
+  a = Sys.time()
+  area_i = project_var$area_ha[i]
+  obs_i = additionality_estimates[[i]] %>%
+    dplyr::select(additionality) %>%
+    mutate(additionality = additionality / area_i)
+  bootstrap_i = data.frame(project = projects[i],
+                           val = as.vector(boot::boot(obs_i, BootMean, R = boot_n)$t)) #around 23 seconds per run
+  b = Sys.time()
+  cat(projects[i], ":", b - a, "\n")
+  return(bootstrap_i)
+})
+names(obs_add_boot) = projects
 
+#Output: bootstrapped observed addditionality values for all projects
+saveRDS(obs_add_boot, paste0(out_path, "_bootstrapped_obs_add.rds"))
+#c_loss_boot = read_rds(paste0(out_path, "_bootstrapped_obs_add.rds"))
 
 # D. Generate additionality forecast and estimate project effectiveness ----
 forecast_summ = lapply(seq_along(projects), function(i) {
-  val = c_loss_boot[[i]]$val
-  val_mean = mean(val, na.rm = T)
-  val_ci = (qt(p = 0.975, df = boot_n - 1) * sd(val, na.rm = T) / sqrt(boot_n))
-  out_df = data.frame(mean = val_mean, ci = val_ci) %>%
-    mutate(ci_upper = mean + ci, ci_lower = mean - ci)
+  c_loss_i = c_loss_boot[[i]]$val
+  c_loss_mean = mean(c_loss_i, na.rm = T)
+  c_loss_ci = (qt(p = 0.975, df = boot_n - 1) * sd(c_loss_i, na.rm = T) / sqrt(boot_n))
+
+  obs_add_i = obs_add_boot[[i]]$val
+  obs_add_mean = mean(obs_add_i, na.rm = T)
+  obs_add_ci = (qt(p = 0.975, df = boot_n - 1) * sd(obs_add_i, na.rm = T) / sqrt(boot_n))
+
+  out_df = data.frame(c_loss_mean = c_loss_mean, c_loss_ci = c_loss_ci,
+                      obs_add_mean = obs_add_mean, obs_add_ci = obs_add_ci) %>%
+    mutate(c_loss_upper = c_loss_mean + c_loss_ci,
+           c_loss_lower = c_loss_mean - c_loss_ci,
+           obs_add_upper = obs_add_mean + obs_add_ci,
+           obs_add_lower = obs_add_mean - obs_add_ci)
   return(out_df)
 }) %>%
   do.call(rbind, .) %>%
   mutate_all(function(x) signif(x, 3)) %>%
-  mutate(project = projects)
+  mutate(project = projects) %>%
+  mutate(effectiveness_mean = obs_add_mean / c_loss_mean, #calculate project effectiveness
+         effectiveness_upper = obs_add_upper / c_loss_lower,
+         effectiveness_lower = obs_add_lower / c_loss_upper)
 
-#Output: additionality forecast under different scenarios
+
+#Output: additionality forecast summaries
 write.table(forecast_summ, paste0(out_path, "_forecast_summ.csv"), sep = ",", col.names = NA, row.names = T)
 
-#Visualisation: Figure S4: side-by-side comparison of forecast vs. observed additionality distributions for each project
 if(visualise) {
+  #Visualisation: Figure S1: side-by-side comparison of forecast vs. observed additionality distributions for each project
   df_forecast_obs = lapply(seq_along(projects), function(i) {
-    area = project_var$area_ha[i]
     rbind(data.frame(type = "Forecast",
                      value = c_loss_boot[[i]]$val),
           data.frame(type = "Observed",
-                     value = filter(additionality_estimates[[i]], started)$additionality / area)) %>%
+                     value = obs_add_boot[[i]]$val)) %>%
       mutate(project = projects[i])
   }) %>% do.call(rbind, .)
 
-  p_forecast_obs = ggplot(data = subset(df_forecast_obs, project != "934"), aes(x = type, y = value)) +
+  p_forecast_obs = ggplot(data = df_forecast_obs, aes(x = type, y = value)) +
     geom_boxplot(aes(color = type)) +
     geom_hline(yintercept = 0, linetype = 3) +
     facet_wrap(vars(project), ncol = 5) +
     scale_x_discrete(labels = c("Forecast", "Observed")) +
     scale_color_manual(values = c("red", "black"),
                       labels = c("Forecast", "Observed")) +
-    labs(x = "", y = "Annual additionality (Mg/ha/yr)") +
+    labs(x = "", y = "Annual additionality (MgC/ha/yr)") +
     theme_bw() +
     theme(panel.grid = element_blank(),
           legend.position = "none",
-          strip.text = element_text(size = 20),
+          strip.text = element_text(size = 16),
           axis.title = element_text(size = 16),
           axis.text = element_text(size = 14),
-          axis.text.x = element_text(angle = 90))
-  ggsave(paste0(out_path, "_forecast_obs_exclude_934.png"), width = 3000, height = 3000, units = "px")
-}
+          axis.text.x = element_text())
+  ggsave(paste0(out_path, "_forecast_obs.png"), width = 4000, height = 4000, units = "px")
 
-#Visualisation: Figure 3: mean forecast vs mean observed
-if(visualise) {
-  df_forecast_obs_mean = df_forecast_obs %>%
-    group_by(Type, project) %>%
-    summarise(mean = mean(value)) %>%
-    ungroup() %>%
-    pivot_wider(names_from = "type", values_from = mean)
+  # p_forecast_obs_list = lapply(seq_along(projects), function(i) {
+  #   ggplot(data = subset(df_forecast_obs, project == projects[i]), aes(x = type, y = value)) +
+  #   geom_boxplot(aes(color = type)) +
+  #   geom_hline(yintercept = 0, linetype = 3) +
+  #   scale_x_discrete(labels = c("Forecast", "Observed")) +
+  #   scale_color_manual(values = c("red", "black"),
+  #                      labels = c("Forecast", "Observed")) +
+  #   labs(x = "", y = "", title = projects[i]) +
+  #   theme_bw() +
+  #   theme(panel.grid = element_blank(),
+  #         legend.position = "bottom",
+  #         strip.text = element_text(size = 16),
+  #         axis.title = element_text(size = 16),
+  #         axis.text = element_text(size = 14),
+  #         axis.text.x = element_blank(),
+  #         legend.title = element_blank(),
+  #         legend.text = element_text(size = 14))
+  # }) %>%
+  #   ggpubr::ggarrange(plotlist = ., ncol = 5, nrow = 4, common.legend = TRUE,
+  #                     legend = "bottom", align = "hv") + bgcolor("white")
+  # annotate_figure(p_forecast_obs_list,
+  #                 left = textGrob("Annual additionality (MgC/ha/yr)", rot = 90, vjust = 2, gp = gpar(cex = 2)))
+  # ggsave(paste0(out_path, "_forecast_obs_ggarrange.png"), width = 5000, height = 4000, units = "px")
 
-  p_forecast_obs_mean = ggplot(data = df_forecast_obs_mean, aes(x = Forecast, y = Observed)) +
+  #Visualisation: Figure 1: scatterplot of mean forecast vs mean observed
+  p_forecast_obs_mean = ggplot(data = forecast_summ, aes(x = c_loss_mean, y = obs_add_mean)) +
       geom_point() +
-      geom_abline(intercept = 0, slope = 1, linetype = 3) +
+      geom_abline(intercept = 0, slope = 1, linetype = 2) +
       geom_hline(yintercept = 0, linetype = 3) +
-      geom_text(aes(x = Forecast * x / 100, y = Observed + 0.025, label = project)) +
-      scale_x_continuous(limits = c(0, 0.75)) +
-      scale_y_continuous(limits = c(-1.5, 5.5)) +
-      labs(x = "Mean forecasted annual additionality (Mg/ha/yr)", y = "Mean observed annual additionality (Mg/ha/yr)") +
+      geom_text(aes(x = c_loss_mean + 0.005, y = obs_add_mean + 0.005, label = project)) +
+      scale_x_continuous(limits = c(0, 0.55), expand = c(0, 0)) + #ensures no padding
+      scale_y_continuous(limits = c(-0.4, 0.4), expand = c(0, 0)) +
+      labs(x = "Mean forecasted annual additionality (MgC/ha/yr)", y = "Mean observed annual additionality (MgC/ha/yr)") +
       theme_bw() +
       theme(panel.grid = element_blank(),
             axis.title = element_text(size = 16),
             axis.text = element_text(size = 14))
-    ggsave(paste0(out_path, "_forecast_obs_mean.png"), width = 3000, height = 3000, units = "px")
-}
+    ggsave(paste0(out_path, "_forecast_obs_mean.png"), width = 4000, height = 4000, units = "px")
 
-#Visualisation: Figure 4: over-claiming risk vs forecast under different scenarios
-if(visualise) {
-  df_overclaim = lapply(seq_along(scenarios), function(i) {
-    scenario = scenarios[i]
-    df_out = lapply(seq_along(projects), function(j) {
-      obs_val = filter(df_forecast_obs, Type == "Observed" & project == projects[j])$Value
-      forecast_val = forecast_summ %>%
-        filter(project == projects[j]) %>%
-        dplyr::select(ends_with(as.character(scenario)))
-      forecast_mean = as.numeric(forecast_val[1])
-      forecast_ci = as.numeric(forecast_val[2])
-      data.frame(project = projects[j],
-                overclaim_mean = sum(obs_val < forecast_mean) / length(obs_val),
-                overclaim_upper = sum(obs_val < forecast_mean + forecast_ci) / length(obs_val),
-                overclaim_lower = sum(obs_val < forecast_mean - forecast_ci) / length(obs_val))
+  #Visualisation: Figure 2: project effectiveness
+  p_effectiveness = ggplot(data = forecast_summ, aes(x = c_loss_mean, y = effectiveness_mean)) +
+      geom_point() +
+      geom_hline(yintercept = 1, linetype = 2) +
+      geom_hline(yintercept = 0, linetype = 3) +
+      geom_text(aes(x = c_loss_mean + 0.01, y = effectiveness_mean, label = project)) +
+      scale_x_continuous(limits = c(0, 0.55), expand = c(0, 0)) + #ensures no padding
+      scale_y_continuous(limits = c(-10, 30), expand = c(0, 0)) +
+      labs(x = "Mean forecasted annual additionality (MgC/ha/yr)", y = "Project effectiveness") +
+      theme_bw() +
+      theme(panel.grid = element_blank(),
+            axis.title = element_text(size = 16),
+            axis.text = element_text(size = 14))
+  ggsave(paste0(out_path, "_effectiveness.png"), width = 4000, height = 4000, units = "px")
+
+  #Visualisation: Figure 3: over-crediting risk if the forecast is used to issue credits ex ante
+  df_overcredit = lapply(seq_along(projects), function(i) {
+    forecast_i = subset(forecast_summ, project == projects[i])$c_loss_mean
+    obs_i = additionality_estimates[[i]] %>%
+      mutate(additionality = additionality / area_i) %>%
+      pull(additionality)
+    prob_overcredit = length(obs_i[obs_i < forecast_i]) / length(obs_i)
+    mean_overcredit = sum(forecast_i - obs_i[obs_i < forecast_i]) / length(obs_i)
+
+    df_overcredit_i = data.frame(project = projects[i],
+                                 forecast = forecast_i,
+                                 prob_overcredit = prob_overcredit,
+                                 mean_overcredit = mean_overcredit)
+    return(df_overcredit_i)
     }) %>%
       do.call(rbind, .) %>%
-      mutate(forecast = df_forecast_obs_mean$Forecast,
-            scenario = scenario)
-    return(df_out)
-  })
+      mutate(project = factor(project, levels = projects))
 
-  for(i in seq_along(scenarios)) {
-    p_overclaim = ggplot(data = df_overclaim[[i]], aes(x = forecast, y = overclaim_mean)) +
-      geom_point(aes(y = overclaim_mean), size = 1) +
-      geom_linerange(aes(ymin = overclaim_lower, ymax = overclaim_upper)) +
-      geom_text(aes(x = forecast, y = overclaim_mean + 0.005, label = project)) +
-      labs(x = "Mean forecasted annual additionality (Mg/ha/yr)", y = "Over-claiming risk (Mg/ha/yr)") +
+    p_prob_overcredit = ggplot(data = df_overcredit, aes(x = forecast, y = prob_overcredit)) +
+      geom_point() +
+      geom_text(aes(x = forecast, y = prob_overcredit + 0.01, label = project)) +
+      labs(x = "Mean forecasted annual additionality (MgC/ha/yr)", y = "Over-crediting risk") +
       theme_bw() +
       theme(panel.grid = element_blank(),
             axis.title = element_text(size = 16),
             axis.text = element_text(size = 14))
-    ggsave(paste0(out_path, "_forecast_overclaiming_", scenarios[i], ".png"), width = 3000, height = 3000, units = "px")
-  }
+    ggsave(paste0(out_path, "_forecast_overcrediting_prob.png"), width = 3000, height = 3000, units = "px")
 
-  df_overclaim_all = df_overclaim %>%
-    do.call(rbind, .) %>%
-    dplyr::select(c("project", "overclaim_mean", "scenario")) %>%
-    mutate(project = factor(project, levels = projects))
-  df_text = data.frame(y = filter(df_overclaim_all, scenario == "100")$overclaim_mean,
-                      project = projects)
-
-  p_overclaim_all = ggplot(data = df_overclaim_all, aes(x = scenario, y = overclaim_mean, group = project)) +
-    geom_line(aes(color = project), linewidth = 2, linejoin = "round") +
-    geom_text(data = df_text, aes(x = 102, y = y, label = project)) +
-    scale_x_continuous(breaks = c(25, 50, 75, 100), labels = c(25, 50, 75, 100)) +
-    labs(x = "Scenario (% project effectiveness)", y = "Over-claiming risk") +
-    theme_classic() +
-    theme(legend.position = "none",
-          axis.title = element_text(size = 16),
-          axis.text = element_text(size = 14))
-  ggsave(paste0(out_path, "_forecast_overclaiming_all.png"), width = 4000, height = 4000, units = "px")
+    # p_mean_overcredit = ggplot(data = df_overcredit, aes(x = forecast, y = mean_overcredit)) +
+    #   geom_point() +
+    #   geom_abline(intercept = 0, slope = 1, linetype = 2) +
+    #   geom_text(aes(x = forecast, y = mean_overcredit + 0.005, label = project)) +
+    #   scale_x_continuous(limits = c(0, 0.75)) + #ensures no padding
+    #   scale_y_continuous(limits = c(0, 0.75)) +
+    #   labs(x = "Mean forecasted annual additionality (MgC/ha/yr)", y = "Expected amount of over-crediting (MgC/ha/yr)") +
+    #   theme_bw() +
+    #   theme(panel.grid = element_blank(),
+    #         axis.title = element_text(size = 16),
+    #         axis.text = element_text(size = 14))
+    # ggsave(paste0(out_path, "_forecast_overcrediting_mean.png"), width = 3000, height = 3000, units = "px")
 }

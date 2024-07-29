@@ -65,15 +65,15 @@ AdditionalityPair = function(matched_path, matchless_path, k, matches, t0, area_
         filter(class == "1") %>%
         dplyr::select(c("treatment", "prop_df", "started"))
 
-    #calculate annual carbon stock (Mg)
+    #calculate annual carbon stock (MgC)
     carbon_series = luc_series$series %>%
         merge(., acd, by.x = "class", by.y = "land.use.class", all.x = T) %>%
-        mutate(carbon_content = class_area * carbon.density) %>% #Mg
+        mutate(carbon_content = class_area * carbon.density) %>% #MgC
         group_by(treatment, year) %>%
         summarise(carbon_content = sum(carbon_content, na.rm = T)) %>%
         ungroup()
 
-    #calculate annual carbon flux and additionality
+    #calculate annual carbon flux and additionality (CO2e)
     carbon_wide = pivot_wider(carbon_series, names_from = "treatment", values_from = "carbon_content")
     out_df = data.frame(year = carbon_wide$year[-1],
                         c_loss = -diff(carbon_wide$control),
