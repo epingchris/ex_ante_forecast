@@ -83,23 +83,22 @@ proj_meta = read.csv(paste0("proj_meta.csv"))
 if(analysis_type == "full") {
 
   project_dir = "/maps/epr26/tmf_pipe_out/" #new results from E-Ping's pipeline run
-  projects = list.files(project_dir) %>% #full = T and basename() negates one another
-    str_subset("\\.", negate = T) %>%
-    str_subset("\\_", negate = T) %>%
-    str_subset("ac", negate = T) %>%
-    setdiff(c("0000", "9999")) #reserved for control and grid
+  exclude_strings = c("slopes", "elevation", "srtm", "ac", "as", "\\.", "\\_", "0000", "9999")
+  projects = map(exclude_strings, function(x) str_subset(string = projects, pattern = x, negate = T)) %>%
+    reduce(intersect)
 
   #only keep projects who have finished running ("additionality.csv" exists)
-  done_id = sapply(projects, function(x) list.files(paste0(project_dir, x)) %>% str_subset("additionality.csv") %>% length() > 0)
-  projects = projects[done_id]
+  done_vec = sapply(projects, function(x) list.files(paste0(project_dir, x)) %>% str_subset("additionality.csv") %>% length() > 0)
 
   #only keep projects with complete ACD values for LUC 1, 2, 3, and 4
-  full_acd_id = sapply(projects, function(x) {
+  full_acd_vec = sapply(projects, function(x) {
     acd = read.csv(paste0(project_dir, x, "/", x, "carbon-density.csv"))
     Reduce("&", 1:4 %in% acd$land.use.class)
   })
-  projects = projects[full_acd_id]
-  #1399 and 1408 might potentially be excluded due to weird results: to be investigated
+
+  projects_df = data.frame(project = projects, done = done_vec, full_acd = full_acd_vec)
+  write.csv(projects_df, paste0(project_dir, "project_status.csv"), row.names = F)
+  projects = projects[done_id & full_acd_id]
 
   in_paths = paste0(project_dir, projects, "/", projects)
 
