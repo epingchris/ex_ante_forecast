@@ -72,19 +72,22 @@ source("PredictDefor.r")
 
 # 0a. E-Ping's workflow to obtain input variables ----
 
-#Pre-defined settings for input variables based on analysis type
-analysis_type = "full" #"full", "grid", "ac", "control"
-forecast = (analysis_type == "ac")
-visualise = T #generate plots or not
+#Load country and t0 info (csv file copied from Tom's directory)
+proj_info = read.csv("proj_meta.csv") %>%
+  dplyr::select(ID, COUNTRY, t0)
+ac_info = data.frame(ID = paste0("ac", sprintf("%02d", c(1:6))), COUNTRY = "Brazil", t0 = 2021)
+control_as_info = read.csv("as_info.csv") %>%
+  mutate(ID = paste0("as", sprintf("%02d", index)), t0 = 2011) %>%
+  dplyr::select(ID, COUNTRY, t0)
+proj_info_all = do.call(rbind, list(proj_info, ac_info, control_as_info))
 
-#Load basic info (csv file copied from Tom's directory) for country and t0 input
-proj_meta = read.csv(paste0("proj_meta.csv"))
+#Based on analysis type, find project names (file prefixes) and store in vector "projects"
+project_dir = "/maps/epr26/tmf_pipe_out/" #define where implementation code results are stored
+analysis_type = "ongoing" #"ongoing": ongoing REDD+ projects; "control": control areas; "ac": Amazonian Collective; "grid": gridded subplots, not used
+if(analysis_type == "ongoing") {
 
-if(analysis_type == "full") {
-
-  project_dir = "/maps/epr26/tmf_pipe_out/" #new results from E-Ping's pipeline run
   exclude_strings = c("slopes", "elevation", "srtm", "ac", "as", "\\.", "\\_", "0000", "9999")
-  projects = map(exclude_strings, function(x) str_subset(string = projects, pattern = x, negate = T)) %>%
+  projects = map(exclude_strings, function(x) str_subset(string = list.files(project_dir), pattern = x, negate = T)) %>%
     reduce(intersect)
 
   #only keep projects who have finished running ("additionality.csv" exists)
@@ -98,69 +101,51 @@ if(analysis_type == "full") {
 
   projects_df = data.frame(project = projects, done = done_vec, full_acd = full_acd_vec)
   write.csv(projects_df, paste0(project_dir, "project_status.csv"), row.names = F)
-  projects = projects[done_id & full_acd_id]
-
-  in_paths = paste0(project_dir, projects, "/", projects)
-
-  pair_dirs = paste0(project_dir, projects, "/pairs/")
-  k_paths = paste0(in_paths, "k.parquet")
-  m_paths = paste0(in_paths, "matches.parquet")
-  acd_paths = paste0(in_paths, "carbon-density.csv")
-  polygon_paths = paste0("/maps/epr26/tmf-data/projects/", projects, ".geojson")
-  country = proj_meta[match(str_replace(projects, "a", ""), proj_meta$ID), ]$COUNTRY
-  t0 = proj_meta[match(str_replace(projects, "a", ""), proj_meta$ID), ]$t0
-  proj_name = str_replace(projects, "a", "")
-
-} else if(analysis_type == "grid") {
-
-  project_dir = "/maps/epr26/tmf_pipe_out/1201_grid/"
-  projects = 1:49 #27, 31 with no matches
-  in_paths = paste0(project_dir, projects, "/1201_", projects)
-
-  pair_dirs = paste0(project_dir, projects, "/pairs/")
-  k_paths = paste0(in_paths, "k.parquet")
-  m_paths = paste0(in_paths, "matches.parquet")
-  acd_paths = paste0(in_paths, "carbon-density.csv")
-  polygon_paths = paste0("/maps/epr26/tmf-data-grid/1201/1201_", projects, ".geojson")
-  country = filter(proj_meta, ID == "1201")$COUNTRY
-  t0 = filter(proj_meta, ID == "1201")$t0
-  proj_name = paste0("1201_", projects)
+  projects = subset(projects_df, done & full_acd)$project
 
 } else if(analysis_type == "control") {
 
-  project_dir = "/maps/epr26/tmf_pipe_out/0000_grid/"
-  projects = c(2:5, 7, 8, 10)
-  in_paths = paste0(project_dir, projects, "/0000_", projects)
-
-  pair_dirs = paste0(project_dir, projects, "/pairs/")
-  k_paths = paste0(in_paths, "k.parquet")
-  m_paths = paste0(in_paths, "matches.parquet")
-  acd_paths = paste0(in_paths, "carbon-density.csv")
-  polygon_paths = paste0("/maps/epr26/tmf-data-grid/0000/0000_", projects, ".geojson")
-  country = "Brazil"
-  t0 = 2011
-  proj_name = paste0("0000_", projects)
+  #control polygons in Asia
+  projects = paste0("as", sprintf("%02d", c(1:9, 13)))
 
 } else if(analysis_type == "ac") {
 
-  project_dir = "/maps/epr26/tmf_pipe_out/"
-  projects = list.files(project_dir) %>%
-    str_subset("ac\\d\\d")
-  in_paths = paste0(project_dir, projects, "/", projects)
-
-  pair_dirs = paste0(project_dir, projects, "/pairs/")
-  k_paths = paste0(in_paths, "k.parquet")
-  m_paths = paste0(in_paths, "matches.parquet")
-  acd_paths = paste0(in_paths, "carbon-density.csv")
-  polygon_paths = paste0("/maps/epr26/tmf-data/projects/", projects, ".geojson")
-  country = "Brazil"
-  t0 = 2021
-  proj_name = projects
+  #Amazonian Collective polygons
+  projects = paste0("ac", sprintf("%02d", c(1:6)))
 
 }
+in_paths = paste0(project_dir, projects, "/", projects)
 
+#Produce input variables needed for the analysis
+pair_dirs = paste0(project_dir, projects, "/pairs/")
+k_paths = paste0(in_paths, "k.parquet")
+m_paths = paste0(in_paths, "matches.parquet")
+acd_paths = paste0(in_paths, "carbon-density.csv")
+polygon_paths = paste0("/maps/epr26/tmf-data/projects/", projects, ".geojson")
+proj_ID = gsub("(?<=[0-9])a$", "", projects, perl = T)
+country = proj_info_all[match(proj_ID, proj_info_all$ID), ]$COUNTRY
+t0 = proj_info_all[match(proj_ID, proj_info_all$ID), ]$t0
 out_path = paste0("/maps/epr26/tmf_pipe_out/out_",
                   ifelse(analysis_type == "grid", "grid_1201", analysis_type))
+visualise = T #define whether one wants to generate plots (for the manuscript) or not
+
+#"grid" for gridded subplot analyses; not used at the moment
+# if(analysis_type == "grid") {
+
+#   project_dir = "/maps/epr26/tmf_pipe_out/1201_grid/"
+#   projects = 1:49 #27, 31 with no matches
+#   in_paths = paste0(project_dir, projects, "/1201_", projects)
+
+#   pair_dirs = paste0(project_dir, projects, "/pairs/")
+#   k_paths = paste0(in_paths, "k.parquet")
+#   m_paths = paste0(in_paths, "matches.parquet")
+#   acd_paths = paste0(in_paths, "carbon-density.csv")
+#   polygon_paths = paste0("/maps/epr26/tmf-data-grid/1201/1201_", projects, ".geojson")
+#   country = filter(proj_meta, ID == "1201")$COUNTRY
+#   t0 = filter(proj_meta, ID == "1201")$t0
+#   proj_name = paste0("1201_", projects)
+
+# }
 
 
 # 0b. User-defined input variables ----
@@ -173,7 +158,7 @@ out_path = paste0("/maps/epr26/tmf_pipe_out/out_",
 #polygon_paths = NULL
 #country = NULL
 #t0 = NULL
-#proj_name = NULL
+#proj_ID = NULL
 #out_path = NULL
 #visualise = FALSE
 

@@ -30,6 +30,9 @@ shp_id = shp_id[!shp_id %in% c("1359", "902", "3347", "3335", "3114")] #withdraw
 #shp_id = shp_id[!shp_id %in% c("1566", "1067", "958", "1133")] #problematic results: why did I say that?
 
 #find t0
-proj_meta = read.csv("proj_meta.csv") %>%
+proj_candidate = read.csv("proj_meta.csv") %>%
   filter(ID %in% shp_id) %>%
   filter(t0 >= 2007 & t0 <= 2017)
+
+proj_done = read.csv("proj_meta.csv") %>%
+  filter(ID %in% done_id)
