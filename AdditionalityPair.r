@@ -55,16 +55,6 @@ AdditionalityPair = function(matched_path, matchless_path, k, matches, t0, area_
                                       match_years = match_years, match_classes = match_classes,
                                       exp_n_pairs, area_ha, verbose = F)
 
-    #project pixel and matched pixel's pre-project and during-project LUC change
-    lucc = luc_series$series %>%
-        group_by(treatment, class) %>%
-        reframe(year = year[-1],
-                prop_df = -diff(class_prop)) %>%
-        ungroup() %>%
-        mutate(started = (year > t0)) %>%
-        filter(class == "1") %>%
-        dplyr::select(c("treatment", "prop_df", "started"))
-
     #calculate annual carbon stock (MgC)
     carbon_series = luc_series$series %>%
         merge(., acd, by.x = "class", by.y = "land.use.class", all.x = T) %>%
@@ -81,5 +71,5 @@ AdditionalityPair = function(matched_path, matchless_path, k, matches, t0, area_
         mutate(additionality = c_loss - t_loss, pair = pair_id)
     d = Sys.time()
     cat(pair_id, ":", d - c, "\n")
-    return(list(pair_var = pair_var, out_df = out_df, lucc = lucc, pts_matched = pts_matched, exp_n_pairs = exp_n_pairs))
+    return(list(pair_var = pair_var, out_df = out_df, pts_matched = pts_matched, exp_n_pairs = exp_n_pairs))
 }

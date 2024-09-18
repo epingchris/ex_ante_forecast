@@ -25,8 +25,12 @@ options(dplyr.summarise.inform = FALSE)
 source("functions.r") #cpc_rename, tmfemi_reformat, simulate_area_series, make_area_series, assess_balance, make_match_formula
 source("AdditionalityPair.r")
 source("PredictDefor.r")
-BootMean = function(dat, ind) mean(dat[ind, ], na.rm = T) #function for bootstrapped mean
-boot_n = 1000 #number of bootstrapping repetitions
+BootDF = function(type, in_df, boot_n = 1000) {
+  data.frame(type = type,
+             val = as.vector(boot::boot(data = in_df,
+                                        statistics = function(dat, ind) mean(dat[ind, ], na.rm = T), #function for bootstrapped mean
+                                        R = boot_n)$t)) #R: number of bootstrapping repetitions
+}
 
 #Define input variables needed to read TMF implementation output and other data
 
@@ -206,13 +210,20 @@ additionality_out = lapply(seq_along(projects), function(i) { #mclapply() does n
     return(list(pair_var = NULL, additionality_estimates = NULL))
   }
 
-  #loop through all sampled pairs, get matched points and additionality series in each pair
+  #loop through all sampled pairs, get matched points and additionality series in each pair - this is the bottleneck
   pairs_out = lapply(seq_along(matched_paths), function(j) {
     AdditionalityPair(matched_path = matched_paths[j], matchless_path = matchless_paths[j],
                       k = dplyr::select(setK[[i]], c("lat", "lng", "k_ecoregion")),
                       matches = dplyr::select(setM[[i]], c("lat", "lng", "s_ecoregion")),
                       t0 = t0[i], area_ha = area_ha[i], acd = acd[[i]], pair_id = j)
   })
+
+  baseline_best = lapply(pairs_out, function(x) {
+    filter(x$out_df, year <= t0[i] & year > t0[i] - 10) %>%
+      dplyr::select(c_loss) %>%
+      mutate(c_loss = c_loss / area_ha[1])
+  }) %>%
+    do.call(rbind, .)
 
   #gather pair-level summary variables
   pair_ecoregion = lapply(pairs_out, function(x) x$pts_matched$ecoregion) %>%
@@ -238,7 +249,7 @@ additionality_out = lapply(seq_along(projects), function(i) { #mclapply() does n
 
   b = Sys.time()
   cat(projects[i], ":", b - a, "\n")
-  return(list(pair_var = pair_var, additionality_estimates = additionality_estimates))
+  return(list(pair_var = pair_var, additionality_estimates = additionality_estimates, baseline_best = baseline_best))
 })
 
 #Output: project-level variables
@@ -247,6 +258,7 @@ project_var = cbind(project_var,
 #use bind_rows because of potentially different numbers of columns
 write.csv(project_var, paste0(out_path, "_project_var.csv"), row.names = F)
 #project_var = read.csv(paste0(out_path, "_project_var.csv"), header = T)
+
 
 # OPTIONAL output: only basic variables
 write.table(project_var %>% dplyr::select(project, t0, country, area_ha),
@@ -257,9 +269,10 @@ additionality_estimates = lapply(additionality_out, function(x) x$additionality_
 saveRDS(additionality_estimates, paste0(out_path, "_additionality_estimates.rds"))
 #additionality_estimates = read_rds(paste0(out_path, "_additionality_estimates.rds"))
 
-additionality_df = do.call(rbind, additionality_out)
+additionality_df = do.call(rbind, additionality_estimates)
 write.csv(additionality_df, paste0(out_path, "_additionality_estimates.csv"), row.names = F)
 #additionality_df = read.csv(paste0(out_path, "_additionality_estimates.csv"), header = T)
+
 
 #OPTIONAL output: additionality distribution data to send to Ofir
 additionality_distribution = lapply(seq_along(projects), function(i) {
@@ -272,8 +285,36 @@ additionality_distribution = lapply(seq_along(projects), function(i) {
 write.csv(additionality_distribution, paste0("/maps/epr26/tmf_pipe_out/additionality_distribution.csv"), row.names = F)
 
 
-# C. Get baseline ----
-baseline = lapply(seq_along(projects), function(i) {
+# C1. Get best-matched baseline ----
+#get baseline
+baseline_best = lapply(additionality_out, function(x) x$baseline_best)
+saveRDS(baseline_best, paste0(out_path, "_baseline_best.rds"))
+#baseline_best = read_rds(paste0(out_path, "_baseline_best.rds"))
+
+#bootstrap C loss values
+baseline_best_boot = lapply(seq_along(projects), function(i) {
+  a = Sys.time()
+  baseline_i = baseline_best[[i]] %>% dplyr::select(c_loss)
+  bootstrap_i = BootDF(type = projects[i], in_df = baseline_i)
+
+  b = Sys.time()
+  cat(projects[i], ":", b - a, "\n")
+  return(bootstrap_i)
+})
+names(baseline_best_boot) = projects
+saveRDS(baseline_best_boot, paste0(out_path, "_baseline_best_boot.rds"))
+#baseline_best_boot = read_rds(paste0(out_path, "_baseline_best_boot.rds"))
+
+#get mean bootstrapped C loss values
+baseline_best_boot_df = baseline_best_boot %>%
+  do.call(rbind, .) %>%
+  group_by(project) %>%
+  summarise(mean = mean(val), .groups = "drop")
+
+
+# C2. Get loosely-matched baseline ----
+#get baseline
+baseline_loose = lapply(seq_along(projects), function(i) {
   a = Sys.time()
   acd_i = acd[[i]]
   M = setM[[i]] %>%
@@ -290,29 +331,26 @@ baseline = lapply(seq_along(projects), function(i) {
   cat(projects[i], ":", b - a, "\n")
   return(baseline_i)
 })
-names(baseline) = projects
-saveRDS(baseline, paste0(out_path, "_baseline.rds"))
-#baseline = read_rds(paste0(out_path, "_baseline.rds"))
+names(baseline_loose) = projects
+saveRDS(baseline_loose, paste0(out_path, "_baseline_loose.rds"))
+#baseline_loose = read_rds(paste0(out_path, "_baseline_loose.rds"))
 
-#bootstrapping mean of baseline C loss
-c_loss_baseline_boot = lapply(seq_along(projects), function(i) {
+#bootstrap C loss values
+baseline_loose_boot = lapply(seq_along(projects), function(i) {
   a = Sys.time()
-  baseline_i = baseline[[i]] %>%
-    dplyr::select(c_loss)
-  bootstrap_i = data.frame(project = projects[i],
-                           val = as.vector(boot::boot(baseline_i, BootMean, R = boot_n)$t)) #around 23 seconds per run
+  baseline_i = baseline[[i]] %>% dplyr::select(c_loss)
+  bootstrap_i = BootDF(type = projects[i], in_df = baseline_i)
+
   b = Sys.time()
   cat(projects[i], ":", b - a, "\n")
   return(bootstrap_i)
 })
-names(c_loss_baseline_boot) = projects
+names(baseline_loose_boot) = projects
+saveRDS(baseline_loose_boot, paste0(out_path, "_baseline_loose_boot.rds"))
+#baseline_loose_boot = read_rds(paste0(out_path, "_baseline_loose_boot.rds"))
 
-#Output: all bootstrapped baseline C loss values
-saveRDS(c_loss_baseline_boot, paste0(out_path, "_c_loss_baseline_boot.rds"))
-#c_loss_baseline_boot = read_rds(paste0(out_path, "_c_loss_baseline_boot.rds"))
-
-#Output: bootstrapped mean baseline C loss values
-c_loss_baseline_boot_df = c_loss_baseline_boot %>%
+#get mean bootstrapped C loss values
+baseline_loose_boot_df = baseline_loose_boot %>%
   do.call(rbind, .) %>%
   group_by(project) %>%
   summarise(mean = mean(val), .groups = "drop")
@@ -324,61 +362,46 @@ c_loss_baseline_boot_df = c_loss_baseline_boot %>%
 c_loss_obs_control_boot = lapply(seq_along(projects), function(i) {
   a = Sys.time()
   area_i = project_var$area_ha[i]
-  t_loss_pre_i = additionality_estimates[[i]] %>%
-    filter(started == F) %>%
-    dplyr::select(t_loss) %>%
-    mutate(t_loss = t_loss / area_i)
-  t_loss_pre_boot_i = data.frame(type = "t_loss_pre",
-                                 val = as.vector(boot::boot(t_loss_pre_i, BootMean, R = boot_n)$t))
+  dat_i = additionality_estimates[[i]] %>%
+    mutate(t_loss = t_loss / area_i,
+           c_loss = t_loss / area_i,
+           additionality = additionality / area_i)
 
-  cf_loss_pre_i = additionality_estimates[[i]] %>%
-    filter(started == F) %>%
-    dplyr::select(c_loss) %>%
-    mutate(c_loss = c_loss / area_i)
-  cf_loss_pre_boot_i = data.frame(type = "cf_loss_pre",
-                                  val = as.vector(boot::boot(cf_loss_pre_i, BootMean, R = boot_n)$t))
+  p_loss_pre_i = subset(dat_i, started == F) %>% dplyr::select(t_loss)
+  p_loss_pre_boot_i = BootDF(type = "t_loss_pre", in_df = p_loss_pre_i)
 
-  t_loss_post_i = additionality_estimates[[i]] %>%
-    filter(started == T) %>%
-    dplyr::select(t_loss) %>%
-    mutate(t_loss = t_loss / area_i)
-  t_loss_post_boot_i = data.frame(type = "t_loss_post",
-                                  val = as.vector(boot::boot(t_loss_post_i, BootMean, R = boot_n)$t))
+  cf_loss_pre_i = subset(dat_i, started == F) %>% dplyr::select(c_loss)
+  cf_loss_pre_boot_i = BootDF(type = "cf_loss_pre", in_df = cf_loss_pre_i)
 
-  cf_loss_post_i = additionality_estimates[[i]] %>%
-    filter(started == T) %>%
-    dplyr::select(c_loss) %>%
-    mutate(c_loss = c_loss / area_i)
-  cf_loss_post_boot_i = data.frame(type = "cf_loss_post",
-                                   val = as.vector(boot::boot(cf_loss_post_i, BootMean, R = boot_n)$t))
+  p_loss_post_i = subset(dat_i, started == T) %>% dplyr::select(t_loss)
+  p_loss_post_boot_i = BootDF(type = "p_loss_post", in_df = p_loss_post_i)
 
-  add_i = additionality_estimates[[i]] %>%
-    filter(started == T) %>%
-    dplyr::select(additionality) %>%
-    mutate(additionality = additionality / area_i)
-  add_boot_i = data.frame(type = "additionality",
-                                   val = as.vector(boot::boot(add_i, BootMean, R = boot_n)$t))
+  cf_loss_post_i = subset(dat_i, started == T) %>% dplyr::select(c_loss)
+  cf_loss_post_boot_i = BootDF(type = "cf_loss_post", in_df = cf_loss_post_i)
+
+  add_i = subset(dat_i, started == T) %>% dplyr::select(additionality)
+  add_boot_i = BootDF(type = "additionality", in_df = add_i)
 
   b = Sys.time() # less than one second per run
 
-  bootstrap_i = rbind(t_loss_pre_boot_i, t_loss_post_boot_i, cf_loss_pre_boot_i, cf_loss_post_boot_i, add_boot_i) %>%
+  bootstrap_i = rbind(p_loss_pre_boot_i, cf_loss_pre_boot_i, p_loss_post_boot_i, cf_loss_post_boot_i, add_boot_i) %>%
     mutate(project = projects[i])
   cat(projects[i], ":", b - a, "\n")
   return(bootstrap_i)
 }) %>%
   do.call(rbind, .)
 
-#Output: bootstrapped observed carbon loss values for control areas (target and counterfactual pixels)
+#Output: bootstrapped observed carbon loss values for control areas (project and counterfactual pixels)
 saveRDS(c_loss_obs_control_boot, paste0(out_path, "_c_loss_obs_control_boot.rds"))
 #c_loss_obs_control_boot = read_rds(paste0(out_path, "_c_loss_obs_control_boot.rds"))
 
 #Output: bootstrapped mean of C loss values of control area (target/counterfactual pixels) and baseline
-c_loss_control_df = c_loss_obs_control_boot %>%
+c_loss_obs_control_boot_df = c_loss_obs_control_boot %>%
   group_by(type, project) %>%
   summarise(mean = mean(val), .groups = "drop") %>%
   pivot_wider(names_from = "type", values_from = "mean", id_expand = T) %>%
-  mutate(baseline = c_loss_baseline_boot_df$mean) #baseline carbon loss
-
+  mutate(baseline_best = baseline_best_boot_df$mean, #baseline carbon loss
+         baseline_loose = baseline_loose_boot_df$mean)
 
 #Figure 4. show that matching works
 ggplot(data = c_loss_control_df, aes(x = t_loss_pre, y = cf_loss_pre)) +
@@ -413,20 +436,31 @@ ggplot(data = c_loss_control_df, aes(x = t_loss_post, y = cf_loss_post)) +
 ggsave(paste0(out_path, "_figure5_c_loss_t_vs_cf_post.png"), width = 2500, height = 2500, units = "px")
 
 #Figure 6. show how baseline compares to additionality
-ggplot(data = c_loss_control_df, aes(x = baseline, y = additionality)) +
+ggplot(data = c_loss_control_df, aes(x = baseline_best, y = additionality)) +
   geom_point() +
-  geom_abline(intercept = 0, slope = 1, linetype = 2) +
+  geom_hline(yintercept = 0, linetype = 2) +
   scale_x_continuous(limits = c(0, 1), expand = c(0, 0)) + #ensures no padding
   scale_y_continuous(limits = c(-1, 1), expand = c(0, 0)) +
-  labs(x = "Mean baseline carbon loss (MgC/ha/yr)",
+  labs(x = "Mean best-matched baseline carbon loss (MgC/ha/yr)",
        y = "Mean additionality (MgC/ha/yr)") +
   theme_bw() +
   theme(panel.grid = element_blank(),
         axis.title = element_text(size = 16),
         axis.text = element_text(size = 14))
-ggsave(paste0(out_path, "_figure6_baseline_vs_add.png"), width = 2500, height = 2500, units = "px")
+ggsave(paste0(out_path, "_figure6a_baseline_best_vs_add.png"), width = 2500, height = 2500, units = "px")
 
-
+ggplot(data = c_loss_control_df, aes(x = baseline_loose, y = additionality)) +
+  geom_point() +
+  geom_hline(yintercept = 0, linetype = 2) +
+  scale_x_continuous(limits = c(0, 1), expand = c(0, 0)) + #ensures no padding
+  scale_y_continuous(limits = c(-1, 1), expand = c(0, 0)) +
+  labs(x = "Mean loosely-matched baseline carbon loss (MgC/ha/yr)",
+       y = "Mean additionality (MgC/ha/yr)") +
+  theme_bw() +
+  theme(panel.grid = element_blank(),
+        axis.title = element_text(size = 16),
+        axis.text = element_text(size = 14))
+ggsave(paste0(out_path, "_figure6a_baseline_loose_vs_add.png"), width = 2500, height = 2500, units = "px")
 
 
 # E. Ongoing project areas ----
@@ -448,7 +482,7 @@ c_loss_obs_ongoing_boot = lapply(seq_along(projects), function(i) {
                           val = as.vector(boot::boot(add_i, BootMean, R = boot_n)$t)) #around 23 seconds per run
   b = Sys.time()
 
-  bootstrap_i = rbind(c_loss_cf_i, add_i) %>%
+  bootstrap_i = rbind(c_loss_cf_boot_i, add_boot_i) %>%
     mutate(project = projects[i])
   cat(projects[i], ":", b - a, "\n")
   return(bootstrap_i)
@@ -471,31 +505,35 @@ saveRDS(c_loss_ongoing_df, paste0(out_path, "_c_loss_ongoing_df.rds"))
 #Figure 7. show how baseline compares to counterfactual carbon loss
 ggplot(data = c_loss_ongoing_df, aes(x = baseline, y = cf_c_loss)) +
   geom_point() +
+  geom_text(aes(label = project), hjust = -0.1, size = 4) +
   geom_abline(intercept = 0, slope = 1, linetype = 2) +
-  scale_x_continuous(limits = c(0, 1), expand = c(0, 0)) + #ensures no padding
-  scale_y_continuous(limits = c(-1, 1), expand = c(0, 0)) +
+  geom_hline(yintercept = 0, linetype = 3) +
+  scale_x_continuous(limits = c(0, 1.5), expand = c(0.01, 0.01)) +
+  scale_y_continuous(limits = c(-0.05, 1.5), expand = c(0.01, 0.01)) +
   labs(x = "Mean baseline carbon loss (MgC/ha/yr)",
        y = "Mean observed counterfactual carbon loss (MgC/ha/yr)") +
   theme_bw() +
   theme(panel.grid = element_blank(),
         axis.title = element_text(size = 16),
         axis.text = element_text(size = 14))
-ggsave(paste0(out_path, "_figure7_baseline_vs_c_loss_cf.png"), width = 2500, height = 2500, units = "px")
+ggsave(paste0(out_path, "_figure7_baseline_vs_c_loss_cf.png"), width = 3500, height = 3500, units = "px")
 
 
 #Figure 8. show how baseline compares to additionality
 ggplot(data = c_loss_ongoing_df, aes(x = baseline, y = additionality)) +
   geom_point() +
+  geom_text(aes(label = project), hjust = -0.1, size = 4) +
   geom_abline(intercept = 0, slope = 1, linetype = 2) +
-  scale_x_continuous(limits = c(0, 1), expand = c(0, 0)) + #ensures no padding
-  scale_y_continuous(limits = c(-1, 1), expand = c(0, 0)) +
+  geom_hline(yintercept = 0, linetype = 3) +
+  scale_x_continuous(limits = c(0, 0.55), expand = c(0.01, 0.01)) +
+  scale_y_continuous(limits = c(-0.2, 0.55), expand = c(0.01, 0.01)) +
   labs(x = "Mean baseline carbon loss (MgC/ha/yr)",
        y = "Mean additionality (MgC/ha/yr)") +
   theme_bw() +
   theme(panel.grid = element_blank(),
         axis.title = element_text(size = 16),
         axis.text = element_text(size = 14))
-ggsave(paste0(out_path, "_figure8_baseline_vs_add.png"), width = 2500, height = 2500, units = "px")
+ggsave(paste0(out_path, "_figure8_baseline_vs_add.png"), width = 3500, height = 3500, units = "px")
 
 
 
