@@ -70,12 +70,13 @@ def find_latest_log_file(project_name, folder_path):
     # Define the pattern for the log files we want to find
     pattern = f"out_{project_name}_*_out.txt"
     log_files = glob(os.path.join(folder_path, pattern))
-    print(log_files)
+    #print("in find_latest_log_file function: log_files:", log_files)
     
     # Check if any files match the pattern
     if not log_files:
+        print("in find_latest_log_file function: log_files is empty")
         return None
-
+    
     # Extract date from each file name and find the latest one
     date_format = "%Y_%m_%d"  # Assuming date in filename is in format YYYYMMDD
     latest_file = None
@@ -85,18 +86,18 @@ def find_latest_log_file(project_name, folder_path):
         # Extract the date from the filename using a regular expression
         match = re.search(r'(\d{4}_\d{2}_\d{2})', log_file)
         if match:
-            print(f"Match found: {match.group(0)}")
-            #@@@it still doesn't find a match
-            file_date_str = match.group(1)
+            #print(f"in find_latest_log_file function: Match found: {match.group(0)}")
+            file_date_str = match.group(0)
             file_date = datetime.strptime(file_date_str, date_format)
             
             # Compare to find the latest date
             if latest_date is None or file_date > latest_date:
                 latest_date = file_date
                 latest_file = log_file
+        else:
+            print("in find_latest_log_file function: No match found")
     
     return latest_file
-
 
 # 5. Iterate through new projects and extract information from their log files
 for project_name in new_projects:
@@ -111,18 +112,19 @@ for project_name in new_projects:
     
     # Find the latest log file that matches the desired pattern
     log_file_path = find_latest_log_file(project_name, log_directory)
-    print("log_file_path:"+str(log_file_path))
+    print("In main loop: log_file_path:"+str(log_file_path))
     
     if log_file_path and os.path.exists(log_file_path):
         # 2. Parse the log file to retrieve memory usage and runtime
         memory_usage, execution_time_seconds = parse_log_file(log_file_path)
-        print(f"execution_time_seconds: {execution_time_seconds}")
+        #print(f"memory_usage: {memory_usage}")
+        #print(f"execution_time_seconds: {execution_time_seconds}")
         
         # 4. Calculate execution time in minutes
         execution_time_minutes = execution_time_seconds / 60 if execution_time_seconds else None
         
         # 5. Append new information to the DataFrame
-        df = df.append({
+        new_row = pd.DataFrame([{
             'proj_name': project_name,
             'calculate_k_memory_GB': memory_usage['calculate_k_memory_GB'],
             'find_potential_matches_memory_GB': memory_usage['find_potential_matches_memory_GB'],
@@ -130,7 +132,11 @@ for project_name in new_projects:
             'find_pairs_memory_GB': memory_usage['find_pairs_memory_GB'],
             'execution_time_seconds': execution_time_seconds,
             'execution_time_minutes': execution_time_minutes
-        }, ignore_index=True)
+        }])
+        
+        df = pd.concat([df, new_row], ignore_index = True)
+
+df = df.sort_values('proj_name')
 
 # Save the updated DataFrame back to the CSV file
 df.to_csv(csv_path, index=False)
