@@ -66,7 +66,7 @@ simulate_area_series<-function(pts_matched,
 make_area_series<-function(pts, area_ha, class_prefix){
   pts<-pts[str_detect(colnames(pts), paste(class_prefix, '[:digit:]{4}$|treatment', sep = ''))]
 
-  pts %>%
+  aaa = pts %>%
     # select(-matches(paste('_[1-6]$', sep = ''))) %>% # exclude proportional cover values
     as.data.frame() %>%
     # select(-id, -X2010_agb, -(accessibility:transition), treatment) %>% 
@@ -81,7 +81,7 @@ make_area_series<-function(pts, area_ha, class_prefix){
                                              # it is so rare
     )
     )) %>%
-    # Convert to wide format:
+    # Convert to long format:
     pivot_longer(cols = contains(class_prefix),
                  names_to = c('year', 'class'),
                  names_prefix = class_prefix,

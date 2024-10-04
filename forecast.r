@@ -67,65 +67,90 @@ BootDF = function(type, in_df, boot_n = 1000) {
 
 # 0a. E-Ping's workflow to obtain input variables ----
 
-#Load country and t0 info (csv file copied from Tom's directory)
-proj_info = read.csv("proj_meta.csv") %>%
-  dplyr::select(ID, COUNTRY, t0)
-ac_info = data.frame(ID = paste0("ac", sprintf("%02d", c(1:6))), COUNTRY = "Brazil", t0 = 2021)
-control_as_info = read.csv("as_info.csv") %>%
-  mutate(ID = paste0("as", sprintf("%02d", index)), t0 = 2011) %>%
-  dplyr::select(ID, COUNTRY, t0)
-proj_info_all = do.call(rbind, list(proj_info, ac_info, control_as_info))
+#Define analysis type
+analysis_type = "ongoing"
+#"ongoing": ongoing REDD+ projects (best-matched and loosely-matched baselines)
+#"offset": ongoing REDD+ projects (time-offsetted best-matched baseline)
+#"control": non-project polygons
+#"ac": Amazonian Collective polygons
 
-#Based on analysis type, find project names (file prefixes) and store in vector "projects"
-project_dir = "/maps/epr26/tmf_pipe_out/" #define where implementation code results are stored
-polygon_dir = "/maps/epr26/tmf-data/projects/" #define where polygons are stored
-analysis_type = "ongoing" #"ongoing": ongoing REDD+ projects; "control": control areas; "ac": Amazonian Collective
+polygon_dir = "/maps/epr26/tmf-data/projects/" #where polygons are stored
+out_path = paste0("/maps/epr26/ex_ante_forecast_out/out_", analysis_type) #where outputs are stored
+projects_to_exclude = c("674", "934", "2502", "1408") #which projects to exclude manually
+
+#Based on analysis type, find project names and store in vector "projects", and project basic info and store in dataframe "proj_info"
 if(analysis_type == "ongoing") {
+  project_dir = "/maps/epr26/tmf_pipe_out/" #define where implementation code results are stored
 
+  #Load basic information (csv file copied from Tom's directory)
+  proj_info = read.csv("proj_meta.csv") %>%
+    dplyr::select(ID, COUNTRY, t0)
+
+  #Find all project IDs
   exclude_strings = c("slopes", "elevation", "srtm", "ac", "as", "\\.", "\\_", "0000", "9999")
   projects = map(exclude_strings, function(x) str_subset(string = list.files(project_dir), pattern = x, negate = T)) %>%
     reduce(intersect)
 
-  #only keep projects who have finished running ("additionality.csv" exists)
-  done_vec = sapply(projects, function(x) list.files(paste0(project_dir, x)) %>% str_subset("additionality.csv") %>% length() > 0)
+} else if(analysis_type == "offset") {
+  project_dir = "/maps/epr26/tmf_pipe_out_offset/" #define where implementation code results are stored
 
-  #only keep projects with complete ACD values for LUC 1, 2, 3, and 4
-  full_acd_vec = sapply(projects, function(x) {
-    acd = read.csv(list.files(paste0(project_dir, x), full = T) %>% str_subset("carbon-density"))
-    Reduce("&", 1:4 %in% acd$land.use.class)
-  })
+  #Load basic information (csv file copied from Tom's directory)
+  proj_info = read.csv("proj_meta.csv") %>%
+    dplyr::select(ID, COUNTRY, t0)
 
-  projects_df = data.frame(project = projects, done = done_vec, full_acd = full_acd_vec)
-  write.csv(projects_df, paste0(project_dir, "project_status.csv"), row.names = F)
-  projects = subset(projects_df, done & full_acd)$project
-
-  projects_to_exclude = c("674", "934", "2502", "1408")
-
-  projects = projects[which(projects %in% projects_to_exclude == F)]
+  #Find all project IDs
+  exclude_strings = c("slopes", "elevation", "srtm", "ac", "as", "\\.", "\\_", "0000", "9999")
+  projects = map(exclude_strings, function(x) str_subset(string = list.files(project_dir), pattern = x, negate = T)) %>%
+    reduce(intersect)
 
 } else if(analysis_type == "control") {
+  project_dir = "/maps/epr26/tmf_pipe_out_luc_t/" #define where implementation code results are stored
 
-  #control polygons in Asia
-  projects = list.files(project_dir) %>% str_subset("as") %>% str_subset("\\.", negate = T)
+  #Load basic information
+  asn_info = read.csv("asian_tropics_controls.csv")
+  sa_info = read.csv("neotropics_controls.csv")
+  af_info = read.csv("afrotropics_controls.csv")
+  proj_info = do.call(bind_rows, list(asn_info, sa_info, af_info)) %>%
+    mutate(ID = proj_name, COUNTRY = name, t0 = 2011) %>%
+    filter(ID != "") %>%
+    dplyr::select(ID, COUNTRY, t0)
 
-  #only keep projects who have finished running ("additionality.csv" exists)
-  done_vec = sapply(projects, function(x) list.files(paste0(project_dir, x)) %>% str_subset("additionality.csv") %>% length() > 0)
-
-  #only keep projects with complete ACD values for LUC 1, 2, 3, and 4
-  full_acd_vec = sapply(projects, function(x) {
-    acd = read.csv(list.files(paste0(project_dir, x), full = T) %>% str_subset("carbon-density"))
-    Reduce("&", 1:4 %in% acd$land.use.class)
-  })
-
-  projects_df = data.frame(project = projects, done = done_vec, full_acd = full_acd_vec)
-  projects = subset(projects_df, done & full_acd)$project
+  #Find all project IDs
+  projects = list.files(project_dir) %>%
+    map(c("asn", "af", "sa"), str_subset, string = .) %>%
+    reduce(union) %>%
+    str_subset("\\.", negate = T)
 
 } else if(analysis_type == "ac") {
+  project_dir = "/maps/epr26/tmf_pipe_out/" #define where implementation code results are stored
+
+  #Load basic information
+  proj_info = data.frame(ID = paste0("ac", sprintf("%02d", c(1:6))), COUNTRY = "Brazil", t0 = 2021)
 
   #Amazonian Collective polygons
   projects = paste0("ac", sprintf("%02d", c(1:6)))
 
 }
+
+#only keep projects who have finished running ("additionality.csv" exists)
+if(analysis_type == "offset") {
+  done_vec = sapply(projects, function(x) list.files(paste0(project_dir, x, "/pairs")) %>% str_subset(".parquet") %>% length() == 200)
+} else {
+  done_vec = sapply(projects, function(x) list.files(paste0(project_dir, x)) %>% str_subset("additionality.csv") %>% length() > 0)
+}
+
+#only keep projects with complete ACD values for LUC 1, 2, 3, and 4
+full_acd_vec = sapply(projects, function(x) {
+  acd = read.csv(list.files(paste0(project_dir, x), full = T) %>% str_subset("carbon-density"))
+  acd = acd[, 1:2]
+  colnames(acd) = c("land.use.class", "carbon.density")
+  Reduce("&", 1:4 %in% acd$land.use.class)
+})
+
+projects_df = data.frame(project = projects, done = done_vec, full_acd = full_acd_vec)
+projects_df$to_exclude = projects_df$project %in% projects_to_exclude
+write.csv(projects_df, paste0(out_path, "_project_status.csv"), row.names = F)
+projects = subset(projects_df, done & full_acd & !to_exclude)$project
 
 #Produce input variables needed for the analysis
 pair_dirs = paste0(project_dir, projects, "/pairs/")
@@ -134,9 +159,9 @@ m_paths = list.files(paste0(project_dir, projects), full = T) %>% str_subset("ma
 acd_paths = list.files(paste0(project_dir, projects), full = T) %>% str_subset("carbon-density.csv")
 polygon_paths = paste0(polygon_dir, projects, ".geojson")
 proj_ID = gsub("(?<=[0-9])a$", "", projects, perl = T)
-country = proj_info_all[match(proj_ID, proj_info_all$ID), ]$COUNTRY
-t0 = proj_info_all[match(proj_ID, proj_info_all$ID), ]$t0
-out_path = paste0("/maps/epr26/ex_ante_forecast_out/out_", analysis_type)
+proj_info_selected = proj_info[match(proj_ID, proj_info$ID), ]
+country = proj_info_selected$COUNTRY
+t0 = proj_info_selected$t0
 visualise = T #define whether one wants to generate plots (for the manuscript) or not
 
 
@@ -166,10 +191,14 @@ area_ha = sapply(seq_along(projects), function(i) {
     set_units(ha) #convert into hectares
   return(area_ha)
 })
+proj_info_selected$area_ha = area_ha
+write.csv(proj_info_selected, paste0(out_path, "_project_selected_info.csv"), row.names = F)
 
 #list containing data frame of ACD (MgC/ha) per LUC of every project
 acd = lapply(seq_along(projects), function(i) {
   acd_i = read.csv(acd_paths[i])
+  acd_i = acd_i[, 1:2]
+  colnames(acd_i) = c("land.use.class", "carbon.density")
   for(class in 1:6) {
     if(class %in% acd_i$land.use.class == F) acd_i = rbind(acd_i, c(class, NA))
   }
@@ -195,11 +224,23 @@ setM = lapply(seq_along(projects), function(i) {
     as.data.frame()
 })
 
+i = 2
+aaa = read_parquet(k_paths[i])
+bbb = read_parquet(m_paths[i])
+projects[i]
+t0[i]
+colnames(aaa)
+colnames(bbb)
+
 #data frame of project-level variables
 project_var = data.frame(project = proj_ID, t0 = t0, country = country, area_ha = area_ha, acd_undisturbed = acd_undisturbed)
 
 
 # B. Get observed additionality ----
+additionality_df = read.csv(paste0(out_path, "_additionality_estimates.csv"), header = T)
+existing_projects = unique(additionality_df$project)
+projects = projects[projects %in% existing_projects == F]
+
 #additionality_out = mclapply(seq_along(projects), mc.cores = 15, function(i) {
 additionality_out = lapply(seq_along(projects), function(i) { #mclapply() does not work on Windows
   a = Sys.time()
@@ -270,13 +311,8 @@ write.table(project_var %>% dplyr::select(project, t0, country, area_ha),
 
 #Output: additionality time series
 additionality_estimates = lapply(additionality_out, function(x) x$additionality_estimates)
-saveRDS(additionality_estimates, paste0(out_path, "_additionality_estimates.rds"))
-#additionality_estimates = read_rds(paste0(out_path, "_additionality_estimates.rds"))
-
 additionality_df = do.call(rbind, additionality_estimates)
 write.csv(additionality_df, paste0(out_path, "_additionality_estimates.csv"), row.names = F)
-#additionality_df = read.csv(paste0(out_path, "_additionality_estimates.csv"), header = T)
-
 
 #OPTIONAL output: additionality distribution data to send to Ofir
 additionality_distribution = lapply(seq_along(projects), function(i) {
@@ -363,16 +399,16 @@ baseline_loose_boot_df = baseline_loose_boot %>%
 # D. Non-project control areas ----
 
 #bootstrapping mean of observed C loss values for control areas (target and counterfactual pixels)
-c_loss_obs_control_boot = lapply(seq_along(projects), function(i) {
+c_loss_control_boot = lapply(seq_along(projects), function(i) {
   a = Sys.time()
   area_i = project_var$area_ha[i]
   dat_i = additionality_estimates[[i]] %>%
     mutate(t_loss = t_loss / area_i,
-           c_loss = t_loss / area_i,
+           c_loss = c_loss / area_i,
            additionality = additionality / area_i)
 
   p_loss_pre_i = subset(dat_i, started == F) %>% dplyr::select(t_loss)
-  p_loss_pre_boot_i = BootDF(type = "t_loss_pre", in_df = p_loss_pre_i)
+  p_loss_pre_boot_i = BootDF(type = "p_loss_pre", in_df = p_loss_pre_i)
 
   cf_loss_pre_i = subset(dat_i, started == F) %>% dplyr::select(c_loss)
   cf_loss_pre_boot_i = BootDF(type = "cf_loss_pre", in_df = cf_loss_pre_i)
@@ -396,11 +432,11 @@ c_loss_obs_control_boot = lapply(seq_along(projects), function(i) {
   do.call(rbind, .)
 
 #Output: bootstrapped observed carbon loss values for control areas (project and counterfactual pixels)
-saveRDS(c_loss_obs_control_boot, paste0(out_path, "_c_loss_obs_control_boot.rds"))
+saveRDS(c_loss_control_boot, paste0(out_path, "_c_loss_control_boot.rds"))
 #c_loss_obs_control_boot = read_rds(paste0(out_path, "_c_loss_obs_control_boot.rds"))
 
 #Output: bootstrapped mean of C loss values of control area (target/counterfactual pixels) and baseline
-c_loss_obs_control_boot_df = c_loss_obs_control_boot %>%
+c_loss_control_boot_df = c_loss_control_boot %>%
   group_by(type, project) %>%
   summarise(mean = mean(val), .groups = "drop") %>%
   pivot_wider(names_from = "type", values_from = "mean", id_expand = T) %>%
@@ -408,24 +444,22 @@ c_loss_obs_control_boot_df = c_loss_obs_control_boot %>%
          baseline_loose = baseline_loose_boot_df$mean)
 
 #Figure 4. show that matching works
-ggplot(data = c_loss_control_df, aes(x = t_loss_pre, y = cf_loss_pre)) +
-  geom_point() +
-  geom_abline(intercept = 0, slope = 1, linetype = 2) +
-  scale_x_continuous(limits = c(0, 2.1), expand = c(0, 0)) + #ensures no padding
-  scale_y_continuous(limits = c(0, 2.1), expand = c(0, 0)) +
-  labs(x = "Mean carbon loss in project pixels (MgC/ha/yr)",
-       y = "Mean carbon loss in counterfactual pixels (MgC/ha/yr)",
-       title = "Before t0 in control areas") +
-  theme_bw() +
-  theme(panel.grid = element_blank(),
-        axis.title = element_text(size = 16),
-        axis.text = element_text(size = 14))
-ggsave(paste0(out_path, "_figure4_c_loss_t_vs_cf_pre.png"), width = 3000, height = 3000, units = "px")
-
-#expression(paste0("Mean carbon loss in target pixels before ", t[0], "(MgC/ha/yr)"))
+# ggplot(data = c_loss_control_boot_df, aes(x = p_loss_pre, y = cf_loss_pre)) +
+#   geom_point() +
+#   geom_abline(intercept = 0, slope = 1, linetype = 2) +
+#   scale_x_continuous(limits = c(0, 2.1), expand = c(0, 0)) + #ensures no padding
+#   scale_y_continuous(limits = c(0, 2.1), expand = c(0, 0)) +
+#   labs(x = "Mean carbon loss in project pixels (MgC/ha/yr)",
+#        y = "Mean carbon loss in counterfactual pixels (MgC/ha/yr)",
+#        title = "Before t0 in control areas") +
+#   theme_bw() +
+#   theme(panel.grid = element_blank(),
+#         axis.title = element_text(size = 16),
+#         axis.text = element_text(size = 14))
+# ggsave(paste0(out_path, "_figure4_c_loss_p_vs_cf_pre.png"), width = 3000, height = 3000, units = "px")
 
 #Figure 5. show that there is no bias in additionality estimation
-ggplot(data = c_loss_control_df, aes(x = t_loss_post, y = cf_loss_post)) +
+ggplot(data = c_loss_control_boot_df, aes(x = p_loss_post, y = cf_loss_post)) +
   geom_point() +
   geom_abline(intercept = 0, slope = 1, linetype = 2) +
   scale_x_continuous(limits = c(0, 2.1), expand = c(0, 0)) + #ensures no padding
@@ -437,7 +471,7 @@ ggplot(data = c_loss_control_df, aes(x = t_loss_post, y = cf_loss_post)) +
   theme(panel.grid = element_blank(),
         axis.title = element_text(size = 16),
         axis.text = element_text(size = 14))
-ggsave(paste0(out_path, "_figure5_c_loss_t_vs_cf_post.png"), width = 2500, height = 2500, units = "px")
+ggsave(paste0(out_path, "_figure5_c_loss_p_vs_cf_post.png"), width = 2500, height = 2500, units = "px")
 
 #Figure 6. show how baseline compares to additionality
 ggplot(data = c_loss_control_df, aes(x = baseline_best, y = additionality)) +

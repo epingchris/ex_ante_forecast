@@ -2,11 +2,12 @@
 AdditionalityPair = function(matched_path, matchless_path, k, matches, t0, area_ha, acd, pair_id) {
     c = Sys.time()
 
-    #add ecoregion information to each matched pixel
     pairs = read_parquet(matched_path) %>%
-    dplyr::left_join(., k, by = join_by(k_lat == lat, k_lng == lng)) %>%
-    dplyr::left_join(., matches, by = join_by(s_lat == lat, s_lng == lng))
-    #mutate(s_id = 1:n(), k_id = 1:n())
+      dplyr::select(!c(k_x, k_y, s_x, s_y))
+
+    #add ecoregion information to each matched pixel if it is not already there
+    if("k_ecoregion" %in% colnames(pairs) == F) pairs = dplyr::left_join(pairs, k, by = join_by(k_lat == lat, k_lng == lng))
+    if("s_ecoregion" %in% colnames(pairs) == F) pairs = dplyr::left_join(pairs, matches, by = join_by(s_lat == lat, s_lng == lng))
 
     unmatched_pairs = read_parquet(matchless_path)
 
@@ -53,7 +54,7 @@ AdditionalityPair = function(matched_path, matchless_path, k, matches, t0, area_
     match_classes = c(1, 3)
     luc_series = simulate_area_series(pts_matched, class_prefix = class_prefix, t0 = t0,
                                       match_years = match_years, match_classes = match_classes,
-                                      exp_n_pairs, area_ha, verbose = F)
+                                      exp_n = exp_n_pairs, area = area_ha, verbose = F)
 
     #calculate annual carbon stock (MgC)
     carbon_series = luc_series$series %>%

@@ -1,50 +1,47 @@
 import os
 import re
 import pandas as pd
+import numpy as np
 from glob import glob
 from datetime import datetime
+import geojson
+from area import area
 
-# 1. Load the CSV file into a DataFrame
-csv_path = "/maps/epr26/tmf_pipe_out/project_memory_usage.csv"  # Replace with the path to your CSV file
-if os.path.exists(csv_path):
-    df = pd.read_csv(csv_path)
-else:
-    # Create an empty dataframe with expected columns if the CSV doesn't exist
-    df = pd.DataFrame(columns=['proj_name', 'calculate_k_memory_GB', 'find_potential_matches_memory_GB', 
-                               'build_m_table_memory_GB', 'find_pairs_memory_GB', 
-                               'execution_time_seconds', 'execution_time_minutes'])
+# Function to find new projects to process (those not already in the CSV)
+def find_new_projects(directories):
+    # Get list of monitored project names in the DataFrame
+    existing_projects = set(df.loc[df['build_m_table_memory_GB'].notnull(), 'proj_name'].tolist())
+    new_project_paths = set()
+    
+    # Get list of finished project names based on subfolders in directory, excluding subfolders that include old results or special data
+    project_subfolders = []
+    project_directories = []
+    for directory in directories:
+        for entry in os.scandir(directory):
+            if entry.is_dir():
+                name = entry.name
+                if re.match(r"as\d{2}$", name):  # Exclude "as[0-9][0-9]"
+                    continue
+                if name.startswith(("slopes", "rescaled", "srtm")):  # Exclude "slopes" and "rescaled" and "srtm"
+                    continue
+                project_subfolders.append(name)
+                project_directories.append(directory)
+    
+    for project_subfolder, project_directory in zip(project_subfolders, project_directories):
+        if not project_subfolder in existing_projects:
+            new_project_paths.add(os.path.join(project_directory, project_subfolder))
+            
+    return new_project_paths
 
-# Define the path to the directory containing the log files
-log_directory = "/maps/epr26/tmf_pipe_out_luc_t"  # Replace with your directory name
-
-# 1. Get list of existing project names in the DataFrame
-existing_projects = set(df['proj_name'].tolist())
-
-# 1. Get list of project names based on subfolders in log_directory
-project_subfolders = set(os.listdir(log_directory))
-project_subfolders = {entry.name for entry in os.scandir(log_directory) if entry.is_dir()}
-
-# 1.1 Filter out subfolders that are of format "as[0-9][0-9]" or start with "rescaled"
-filtered_subfolders = set()
-for folder in project_subfolders:
-    if re.match(r"as\d{2}$", folder):  # Exclude "as[0-9][0-9]"
-        continue
-    if folder.startswith(("slopes", "rescaled", "srtm")):  # Exclude "slopes" and "rescaled"
-        continue
-    filtered_subfolders.add(folder)
-
-# Find new projects to process (those not already in the CSV)
-new_projects = filtered_subfolders - existing_projects
-
-# 2. Function to parse memory usage and runtime from log files
+# Function to parse memory usage and runtime from log files
 def parse_log_file(log_file_path):
     memory_usage = {
-        'calculate_k_memory_GB': None,
-        'find_potential_matches_memory_GB': None,
-        'build_m_table_memory_GB': None,
-        'find_pairs_memory_GB': None
+        'calculate_k_memory_GB': np.nan,
+        'find_potential_matches_memory_GB': np.nan,
+        'build_m_table_memory_GB': np.nan,
+        'find_pairs_memory_GB': np.nan
     }
-    execution_time_seconds = None
+    execution_time_seconds = np.nan
     
     with open(log_file_path, 'r') as file:
         for line in file:
@@ -70,7 +67,6 @@ def find_latest_log_file(project_name, folder_path):
     # Define the pattern for the log files we want to find
     pattern = f"out_{project_name}_*_out.txt"
     log_files = glob(os.path.join(folder_path, pattern))
-    #print("in find_latest_log_file function: log_files:", log_files)
     
     # Check if any files match the pattern
     if not log_files:
@@ -86,7 +82,6 @@ def find_latest_log_file(project_name, folder_path):
         # Extract the date from the filename using a regular expression
         match = re.search(r'(\d{4}_\d{2}_\d{2})', log_file)
         if match:
-            #print(f"in find_latest_log_file function: Match found: {match.group(0)}")
             file_date_str = match.group(0)
             file_date = datetime.strptime(file_date_str, date_format)
             
@@ -99,33 +94,84 @@ def find_latest_log_file(project_name, folder_path):
     
     return latest_file
 
-# 5. Iterate through new projects and extract information from their log files
-for project_name in new_projects:
-    # Construct the path to the project folder
-    project_folder_path = os.path.join(log_directory, project_name)
+# Load the CSV file into a DataFrame
+csv_path = "/maps/epr26/tmf_pipe_out/project_memory_usage.csv"  # Replace with the path to your CSV file
+if os.path.exists(csv_path):
+    df = pd.read_csv(csv_path)
+else:
+    # Create an empty dataframe with expected columns if the CSV doesn't exist
+    df = pd.DataFrame(columns=['proj_name', 'area_ha', 'full_acd', 'calculate_k_memory_GB', 'find_potential_matches_memory_GB', 
+                               'build_m_table_memory_GB', 'find_pairs_memory_GB', 
+                               'execution_time_seconds', 'execution_time_minutes'])
+
+# Define the path to the directory containing the log files
+project_directories = ["/maps/epr26/tmf_pipe_out_luc_t", "/maps/epr26/tmf_pipe_out_offset"]  # Replace with your directory name
+
+new_project_paths = find_new_projects(project_directories)
+
+# Iterate through new projects and extract information from their log files
+for project_path in new_project_paths:
+    # Retrieve directory and subfolder names
+    project_path_split = os.path.split(project_path)
+    project_directory = project_path_split[0]
+    project_name = project_path_split[1]
     
     # Check if "additionality.csv" is present in the project folder
-    additionality_file_path = os.path.join(project_folder_path, "additionality.csv")
+    additionality_file_path = os.path.join(project_path, "additionality.csv")
     if not os.path.exists(additionality_file_path):
         print(f"Skipping project '{project_name}' as 'additionality.csv' is not found.")
-        continue  # Skip this project as it may still be running
-    
-    # Find the latest log file that matches the desired pattern
-    log_file_path = find_latest_log_file(project_name, log_directory)
-    print("In main loop: log_file_path:"+str(log_file_path))
-    
-    if log_file_path and os.path.exists(log_file_path):
-        # 2. Parse the log file to retrieve memory usage and runtime
-        memory_usage, execution_time_seconds = parse_log_file(log_file_path)
-        #print(f"memory_usage: {memory_usage}")
-        #print(f"execution_time_seconds: {execution_time_seconds}")
+        memory_usage = {
+            'calculate_k_memory_GB': np.nan,
+            'find_potential_matches_memory_GB': np.nan,
+            'build_m_table_memory_GB': np.nan,
+            'find_pairs_memory_GB': np.nan
+        }
+        execution_time_seconds = np.nan
+        execution_time_minutes = np.nan
+    else:
+        # Find the latest log file that matches the desired pattern
+        log_file_path = find_latest_log_file(project_name, project_directory)
         
-        # 4. Calculate execution time in minutes
-        execution_time_minutes = execution_time_seconds / 60 if execution_time_seconds else None
-        
-        # 5. Append new information to the DataFrame
+        if log_file_path and os.path.exists(log_file_path):
+            # Parse the log file to retrieve memory usage and runtime
+            memory_usage, execution_time_seconds = parse_log_file(log_file_path)
+            
+            # Calculate execution time in minutes
+            execution_time_minutes = execution_time_seconds / 60 if execution_time_seconds else None
+    
+    # Retrieve project area value
+    geojson_path = f"/maps/epr26/tmf-data/projects/{project_name}.geojson"
+    with open(geojson_path) as f:
+        gj = geojson.load(f)
+        features = gj['features'][0]
+        area_ha = area(features['geometry']) / 10000
+    
+    # Check availability of ACD for all LUC
+    acd_path = os.path.join(project_path, "carbon-density.csv")
+    if os.path.exists(acd_path):
+        acd = pd.read_csv(acd_path)
+        acd_class = {1, 2, 3, 4}
+        full_acd = acd_class.issubset(acd.iloc[:, 0])
+    else:
+        full_acd = np.nan
+    
+    # Check if the data frame already contains a row for this project
+    if project_name in df['proj_name'].values:
+        # Fill in values to to the DataFrame if already present
+        df.loc[df['proj_name'] == project_name, 'area_ha'] = area_ha
+        df.loc[df['proj_name'] == project_name, 'full_acd'] = full_acd
+        df.loc[df['proj_name'] == project_name, 'calculate_k_memory_GB'] = memory_usage['calculate_k_memory_GB']
+        df.loc[df['proj_name'] == project_name, 'find_potential_matches_memory_GB'] = memory_usage['find_potential_matches_memory_GB']
+        df.loc[df['proj_name'] == project_name, 'build_m_table_memory_GB'] = memory_usage['build_m_table_memory_GB']
+        df.loc[df['proj_name'] == project_name, 'find_pairs_memory_GB'] = memory_usage['find_pairs_memory_GB']
+        df.loc[df['proj_name'] == project_name, 'execution_time_seconds'] = execution_time_seconds
+        df.loc[df['proj_name'] == project_name, 'execution_time_minutes'] = execution_time_minutes
+    else:
+        # Append new row to the DataFrame if not yet present
         new_row = pd.DataFrame([{
             'proj_name': project_name,
+            'area_ha': area_ha,
+            'full_acd': full_acd,
             'calculate_k_memory_GB': memory_usage['calculate_k_memory_GB'],
             'find_potential_matches_memory_GB': memory_usage['find_potential_matches_memory_GB'],
             'build_m_table_memory_GB': memory_usage['build_m_table_memory_GB'],
