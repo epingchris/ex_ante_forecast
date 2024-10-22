@@ -1,9 +1,9 @@
 #retrieve time series of observed carbon loss and additionality per matched pair
-AdditionalityPair = function(matched_path, matchless_path, k, matches, t0, area_ha, acd, pair_id) {
+AdditionalityPair = function(matched_path, matchless_path, k, matches, t0, area_ha, acd, pair_id, offset = F) {
     c = Sys.time()
 
     pairs = read_parquet(matched_path) %>%
-      dplyr::select(!c(k_x, k_y, s_x, s_y))
+      dplyr::select(-dplyr::any_of(c("k_x", "k_y", "s_x", "s_y")))
 
     #add ecoregion information to each matched pixel if it is not already there
     if("k_ecoregion" %in% colnames(pairs) == F) pairs = dplyr::left_join(pairs, k, by = join_by(k_lat == lat, k_lng == lng))
@@ -13,22 +13,28 @@ AdditionalityPair = function(matched_path, matchless_path, k, matches, t0, area_
 
     control = pairs %>%
         dplyr::select(starts_with("s_")) %>%
-        rename_with(~str_replace(.x, "s_", "")) %>%
-        mutate(treatment = "control") %>%
-        tmfemi_reformat(t0 = t0)
+            rename_with(~str_replace(.x, "s_", "")) %>%
+            mutate(treatment = "control") %>%
+            tmfemi_reformat(t0 = t0)
 
     treat = pairs %>%
         dplyr::select(starts_with("k_")) %>%
-        rename_with(~str_replace(.x, "k_", "")) %>%
-        mutate(treatment = "treatment") %>%
-        tmfemi_reformat(t0 = t0)
+            rename_with(~str_replace(.x, "k_", "")) %>%
+            mutate(treatment = "treatment") %>%
+            tmfemi_reformat(t0 = t0)
+
+    # For when offset = T: remove columns "JRC2021" "JRC2022" which contain only NA's
+    if(offset) {
+        control = control[!str_detect(colnames(control), "JRC[:digit:]{4}$|JRC[1-9]$|JRC10$")]
+        treat = treat[!str_detect(colnames(treat), "JRC[:digit:]{4}$|JRC[1-9]$|JRC10$")]
+    }
 
     exp_n_pairs = nrow(treat) + nrow(unmatched_pairs)
     pts_matched = rbind(treat, control) %>%
-      mutate(defor_5_0 = (cpc5_u - cpc0_u) / 5,
-             defor_10_5 = (cpc10_u - cpc5_u) / 5,
-             defor_10_0 = (cpc10_u - cpc0_u) / 10,
-             pair = pair_id)
+        mutate(defor_5_0 = (cpc5_u - cpc0_u) / 5,
+               defor_10_5 = (cpc10_u - cpc5_u) / 5,
+               defor_10_0 = (cpc10_u - cpc0_u) / 10,
+               pair = pair_id)
 
     # Pair-level independent variables: median of all pixels in each pair (control + treat), then min/median/max across 100 pairs
     # elevation, slope, accessibility, cpc0/5/10_u, cpc0/5/10_d, defor_5_0 = cpc5_u - cpc0_u, defor_10_5 = cpc10_u - cpc5_u
@@ -54,7 +60,7 @@ AdditionalityPair = function(matched_path, matchless_path, k, matches, t0, area_
     match_classes = c(1, 3)
     luc_series = simulate_area_series(pts_matched, class_prefix = class_prefix, t0 = t0,
                                       match_years = match_years, match_classes = match_classes,
-                                      exp_n = exp_n_pairs, area = area_ha, verbose = F)
+                                      exp_n = exp_n_pairs, area = area_ha, verbose = F, offset = offset)
 
     #calculate annual carbon stock (MgC)
     carbon_series = luc_series$series %>%
