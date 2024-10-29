@@ -36,24 +36,6 @@ AdditionalityPair = function(matched_path, matchless_path, k, matches, t0, area_
                defor_10_0 = (cpc10_u - cpc0_u) / 10,
                pair = pair_id)
 
-    # Pair-level independent variables: median of all pixels in each pair (control + treat), then min/median/max across 100 pairs
-    # elevation, slope, accessibility, cpc0/5/10_u, cpc0/5/10_d, defor_5_0 = cpc5_u - cpc0_u, defor_10_5 = cpc10_u - cpc5_u
-    pair_var = pts_matched %>%
-        reframe(elevation = median(elevation),
-                slope = median(slope),
-                accessibility = median(accessibility),
-                cpc0_u = median(cpc0_u),
-                cpc0_d = median(cpc0_d),
-                cpc5_u = median(cpc5_u),
-                cpc5_d = median(cpc5_d),
-                cpc10_u = median(cpc10_u),
-                cpc10_d = median(cpc10_d),
-                defor_5_0 = median(defor_5_0),
-                defor_10_5 = median(defor_10_5),
-                defor_10_0 = median(defor_10_0)) %>%
-        pivot_longer(cols = elevation:defor_10_0, names_to = "var", values_to = "val") %>%
-        mutate(pair = pair_id)
-
     #calculate annual proportion of each land use class
     class_prefix = "JRC"
     match_years = c(0, -5, -10)
@@ -78,5 +60,5 @@ AdditionalityPair = function(matched_path, matchless_path, k, matches, t0, area_
         mutate(additionality = c_loss - t_loss, pair = pair_id)
     d = Sys.time()
     cat(pair_id, ":", d - c, "\n")
-    return(list(pair_var = pair_var, out_df = out_df, pts_matched = pts_matched, exp_n_pairs = exp_n_pairs))
+    return(list(out_df = out_df, pts_matched = pts_matched, exp_n_pairs = exp_n_pairs))
 }

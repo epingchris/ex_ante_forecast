@@ -32,8 +32,8 @@ tmfemi_reformat = function(df, t0) {
 }
 
 simulate_area_series = function(pts_matched,
-                               class_prefix, t0, match_years, match_classes,
-                               exp_n, area, verbose = TRUE, offset = F) {
+                                class_prefix, t0, match_years, match_classes,
+                                exp_n, area, verbose = T, offset = F) {
   match_assess = summary(assess_balance(pts_matched, class_prefix, t0 = t0, match_years, match_classes))
   balance_test = all(abs(match_assess$sum.matched[, 'Std. Mean Diff.']) <= 0.2)
 

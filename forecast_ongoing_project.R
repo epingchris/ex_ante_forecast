@@ -63,13 +63,43 @@ baseline_loose_boot_df = read.csv("/maps/epr26/ex_ante_forecast_out/out_ongoing_
 
 #c_loss_ongoing_stat = do.call(bind_rows, list(c_loss_ongoing_boot_df, baseline_best_boot_df, baseline_loose_boot_df, baseline_offset_boot_df))
 c_loss_ongoing_stat = do.call(bind_rows, list(c_loss_ongoing_boot_df, baseline_best_boot_df, baseline_loose_boot_df))
-c_loss_ongoing_mean = c_loss_ongoing_stat %>%
+c_loss_ongoing_mean_wide = c_loss_ongoing_stat %>%
   dplyr::select(c("project", "type", "mean")) %>%
+  filter(type != "additionality") %>%
   pivot_wider(names_from = "type", values_from = "mean")
 
+c_loss_ongoing_mean = c_loss_ongoing_mean_wide %>%
+  pivot_longer(best:loose, names_to = "baseline_type", values_to = "baseline")
 
 #Figure 5. show how baseline compares to counterfactual carbon loss
-ggplot(data = c_loss_ongoing_mean, aes(x = best, y = cf_loss)) +
+ggplot(data = c_loss_ongoing_mean, aes(x = baseline, y = cf_loss)) +
+  geom_point(aes(shape = baseline_type, color = baseline_type, fill = baseline_type), size = 4) +
+  geom_segment(data = c_loss_ongoing_mean_wide, aes(x = best, xend = loose, y = cf_loss), linetype = 3) +
+  geom_text(data = c_loss_ongoing_mean_wide, aes(x = pmax(best, loose), y = cf_loss, label = project), hjust = -0.5, size = 5) +
+  geom_abline(intercept = 0, slope = 1, linetype = 2) +
+  scale_shape_manual(values = c(best = 16, loose = 18),
+                     labels = c("Best-matched", "Loosely-matched")) +
+  scale_color_manual(values = c(best = "blue", loose = "red"),
+                     labels = c("Best-matched", "Loosely-matched")) +
+  scale_fill_manual(values = c(best = "blue", loose = "red"),
+                     labels = c("Best-matched", "Loosely-matched")) +
+  scale_x_continuous(limits = c(0, 1.45), expand = c(0.01, 0.01)) +
+  scale_y_continuous(limits = c(0, 1.45), expand = c(0.01, 0.01)) +
+  labs(x = "Baseline carbon loss (MgC/ha/yr)",
+       y = "Observed counterfactual carbon loss (MgC/ha/yr)",
+       shape = "Baseline type",
+       color = "Baseline type",
+       fill = "Baseline type") +
+  theme_bw() +
+  theme(panel.grid = element_blank(),
+        axis.title = element_text(size = 18),
+        axis.text = element_text(size = 16),
+        legend.title = element_text(size = 16),
+        legend.text = element_text(size = 14),
+        legend.position = "bottom")
+ggsave(paste0(fig_path, "figure5_baseline_vs_c_loss_cf.png"), width = 2500, height = 3500, units = "px")
+
+ggplot(data = c_loss_ongoing_mean %>% filter(baseline_type == "best"), aes(x = baseline, y = cf_loss)) +
   geom_point() +
   geom_text(aes(label = project), hjust = -0.1, size = 5) +
   geom_abline(intercept = 0, slope = 1, linetype = 2) +
@@ -84,7 +114,7 @@ ggplot(data = c_loss_ongoing_mean, aes(x = best, y = cf_loss)) +
         axis.text = element_text(size = 16))
 ggsave(paste0(fig_path, "figure5a_baseline_best_vs_c_loss_cf.png"), width = 2500, height = 2500, units = "px")
 
-ggplot(data = c_loss_ongoing_mean, aes(x = loose, y = cf_loss)) +
+ggplot(data = c_loss_ongoing_mean %>% filter(baseline_type == "loose"), aes(x = baseline, y = cf_loss)) +
   geom_point() +
   geom_text(aes(label = project), hjust = -0.1, size = 5) +
   geom_abline(intercept = 0, slope = 1, linetype = 2) +
