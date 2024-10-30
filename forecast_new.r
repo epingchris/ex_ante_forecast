@@ -92,7 +92,7 @@ ofir = F
 polygon_dir = "/maps/epr26/tmf-data/projects/" #where polygons are stored
 offset_dir = "/maps/epr26/tmf_pipe_out_offset/" #results for the offsetted baseline are all stored here
 out_path = paste0("/maps/epr26/ex_ante_forecast_out/out_", analysis_type) #where outputs are stored
-projects_to_exclude = c("674", "934", "2502", "1408", "1201", "1686", "2558") #which projects to exclude manually @@@remove 1201, redo 1686!!!
+projects_to_exclude = c("674", "934", "2502", "1408", "1686", "2558") #which projects to exclude manually @@@redo 1686!!!
 
 #Based on analysis type, find project names and store in vector "projects", and project basic info and store in dataframe "proj_info"
 if(analysis_type == "ongoing") {
@@ -145,6 +145,7 @@ projects_df = data.frame(project = projects, done = done_vec, full_acd = full_ac
 projects_df$to_exclude = projects_df$project %in% projects_to_exclude
 write.csv(projects_df, paste0(out_path, "_project_status.csv"), row.names = F)
 projects = subset(projects_df, done & full_acd & !to_exclude)$project
+
 
 #Produce input variables needed for the analysis
 pair_dirs = paste0(project_dir, projects, "/pairs/")
@@ -247,13 +248,9 @@ setM_offset = lapply(seq_along(projects), function(i) {
   if(is.na(m_paths_offset[i])) return(NULL)
   luc_t_10 = paste0("luc_", t0_vec[i] - 20) #offsetted baseline is matched to ten years
   luc_t0 = paste0("luc_", t0_vec[i] - 10)
-  cat(i, projects[i], luc_t_10, luc_t0, "\n")
-  aaa = read_parquet(m_paths_offset[i])
-  cat(colnames(aaa), "\n")
-  aaa = aaa %>%
+  read_parquet(m_paths_offset[i]) %>%
     rename(luc10 = all_of(luc_t_10), luc0 = all_of(luc_t0), s_ecoregion = ecoregion) %>%
     as.data.frame()
-  return(aaa)
 })
 
 
@@ -264,7 +261,6 @@ write.csv(project_var, paste0(out_path, "_project_var.csv"), row.names = F)
 
 # B. Get additionality and baseline ----
 for(i in seq_along(projects)) {
-    a = Sys.time()
 
     t0 = t0_vec[i]
     area_ha = area_ha_vec[i]
@@ -273,7 +269,10 @@ for(i in seq_along(projects)) {
     pair_dir = pair_dirs[i]
     k = dplyr::select(setK[[i]], c("lat", "lng", "k_ecoregion"))
     matches = dplyr::select(setM[[i]], c("lat", "lng", "s_ecoregion"))
+    a = Sys.time()
     pairs_best = AdditionalityPair_new(pair_dir = pair_dir, t0 = t0, area_ha = area_ha, acd = acd, k = k, matches = matches, offset = F)
+    b = Sys.time()
+    cat("Project", i, "/", length(projects), "-", projects[i], "- pairs_best :", b - a, "\n")
 
     additionality = lapply(pairs_best, function(x) x$out_df) %>%
         do.call(dplyr::bind_rows, .) %>%
@@ -302,12 +301,16 @@ for(i in seq_along(projects)) {
         mutate(project = projects[i])
 
     baseline_offset = data.frame(c_loss = numeric())
-    if(file.exists(paste0(offset_dir, projects[i]))) {
+    if(!(is.null(setK_offset[[i]]) | is.null(setM_offset[[i]]))) {
         pair_dir_offset = pair_dirs_offset[i]
         k_offset = dplyr::select(setK_offset[[i]], c("lat", "lng", "k_ecoregion"))
         matches_offset = dplyr::select(setM_offset[[i]], c("lat", "lng", "s_ecoregion"))
+
+        a = Sys.time()
         pairs_offset = AdditionalityPair_new(pair_dir = pair_dir_offset, t0 = t0, area_ha = area_ha, acd = acd,
                                              k = k_offset, matches = matches_offset, offset = T)
+        b = Sys.time()
+        cat("Project", i, "/", length(projects), "-", projects[i], "- pairs_offset :", b - a, "\n")
 
         baseline_offset = lapply(pairs_offset, function(x) {
             filter(x$out_df, year <= 0 & year > -10) %>%
@@ -316,15 +319,12 @@ for(i in seq_along(projects)) {
         }) %>%
             do.call(rbind, .) %>%
             mutate(project = projects[i])
-
     }
 
-    write.csv(additionality, paste0(out_path, "_additionality_", i, ".csv"), row.names = F)
-    write.csv(baseline_best, paste0(out_path, "_baseline_best_", i, ".csv"), row.names = F)
-    write.csv(baseline_loose, paste0(out_path, "_baseline_loose_", i, ".csv"), row.names = F)
-    write.csv(baseline_offset, paste0(out_path, "_baseline_offset_", i, ".csv"), row.names = F)
-    b = Sys.time()
-    cat("Project", i, "/", length(projects), "-", projects[i], ":", b - a, "\n")
+    write.csv(additionality, paste0(out_path, "_additionality_", projects[i], ".csv"), row.names = F)
+    write.csv(baseline_best, paste0(out_path, "_baseline_best_", projects[i], ".csv"), row.names = F)
+    write.csv(baseline_loose, paste0(out_path, "_baseline_loose_", projects[i], ".csv"), row.names = F)
+    write.csv(baseline_offset, paste0(out_path, "_baseline_offset_", projects[i], ".csv"), row.names = F)
 }
 
 
@@ -334,9 +334,9 @@ baseline_loose_boot_list = vector("list", length(projects))
 baseline_offset_boot_list = vector("list", length(projects))
 
 for(i in seq_along(projects)) {
-    baseline_best = read.csv(paste0(out_path, "_baseline_best_", i, ".csv"), header = T)
-    baseline_loose = read.csv(paste0(out_path, "_baseline_loose_", i, ".csv"), header = T)
-    baseline_offset = read.csv(paste0(out_path, "_baseline_offset_", i, ".csv"), header = T)
+    baseline_best = read.csv(paste0(out_path, "_baseline_best_", projects[i], ".csv"), header = T)
+    baseline_loose = read.csv(paste0(out_path, "_baseline_loose_", projects[i], ".csv"), header = T)
+    baseline_offset = read.csv(paste0(out_path, "_baseline_offset_", projects[i], ".csv"), header = T)
 
     baseline_best_boot_list[[i]] = BootSumm(type = "best", in_df = dplyr::select(baseline_loose, c_loss)) %>%
         mutate(project = projects[i])

@@ -10,7 +10,7 @@
     }
 
     pairs_out = lapply(seq_along(matched_paths), function(j) {
-        c = Sys.time()
+        pair_start = Sys.time()
 
         matched_path = matched_paths[j]
         matchless_path = matchless_paths[j]
@@ -71,8 +71,8 @@
                             c_loss = -diff(carbon_wide$control),
                             t_loss = -diff(carbon_wide$treatment)) %>%
             mutate(additionality = c_loss - t_loss, pair = j)
-        d = Sys.time()
-        cat(j, ":", d - c, "\n")
+        pair_end = Sys.time()
+        cat(j, ":", pair_end - pair_start, "\n")
         return(list(out_df = out_df, pts_matched = pts_matched, exp_n_pairs = exp_n_pairs))
     })
 
