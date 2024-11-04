@@ -38,8 +38,8 @@
 
         # For when offset = T: remove columns "JRC2021" "JRC2022" which contain only NA's
         if(offset) {
-            control = control[!str_detect(colnames(control), "JRC[:digit:]{4}$|JRC[1-9]$|JRC10$")]
-            treat = treat[!str_detect(colnames(treat), "JRC[:digit:]{4}$|JRC[1-9]$|JRC10$")]
+            control = control[!str_detect(colnames(control), "JRC[:digit:]{4}$|JRC[1-9]$|JRC1[0-9]$")]
+            treat = treat[!str_detect(colnames(treat), "JRC[:digit:]{4}$|JRC[1-9]$|JRC1[0-9]$")]
         }
 
         exp_n_pairs = nrow(treat) + nrow(unmatched_pairs)

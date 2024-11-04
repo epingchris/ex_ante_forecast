@@ -4,27 +4,30 @@ rm(list = ls())
 #Load packages
 # install.packages(c("arrow","configr", "tidyverse", "magrittr", "sf", "magrittr", "MatchIt",
 #                    "rnaturalearthdata", "configr", "terra", "pbapply", "cleangeo", "doParallel",
-#                    "foreach", "readr", "lwgeom", "rnaturalearth", "stars"), depends = TRUE)
+#                    "foreach", "readr", "lwgeom", "rnaturalearth", "stars", "Metrics"), depends = TRUE)
 
 library(tidyverse) #ggplot2, dplyr, stringr
 library(magrittr) #pipe operators
-library(MatchIt) #MatchIt::matchit
-library(sf) #sf::st_area
-library(ggpubr) #ggpubr::ggarrange
 library(units) #units::set_units
+library(sf) #sf::st_area
 library(arrow) #arrow::read_parquet
-library(pryr) #pryr::object_size
-library(cowplot)
+library(MatchIt) #MatchIt::matchit
 library(boot) #boot::boot
+library(Metrics) #rmse, mae
+#library(pryr) #pryr::object_size
+#library(ggpubr) #ggpubr::ggarrange
+#library(cowplot)
 #library(parallel) #parallel::mclapply
 
 #Remove dplyr summarise grouping message because it prints a lot
-options(dplyr.summarise.inform = FALSE)
+options(dplyr.summarise.inform = F)
 
 #Load pre-defined functions
 source("functions.r") #cpc_rename, tmfemi_reformat, simulate_area_series, make_area_series, assess_balance, make_match_formula
 source("AdditionalityPair.r")
 source("AdditionalityPair_new.r")
+source("plotBaseline.r")
+
 FindFiles = function(dir, pattern, full = F, negate = F) {
   file_matched = list.files(dir, full = full) %>% str_subset(pattern, negate = negate)
   if(length(file_matched) == 0) {
@@ -90,9 +93,14 @@ analysis_type = "ongoing"
 ofir = F
 
 polygon_dir = "/maps/epr26/tmf-data/projects/" #where polygons are stored
-offset_dir = "/maps/epr26/tmf_pipe_out_offset/" #results for the offsetted baseline are all stored here
+if(analysis_type == "control") { #where the results for the offsetted baselines are stored
+    offset_dir = "/maps/epr26/tmf_pipe_out_offset_new/"
+} else {
+    offset_dir = "/maps/epr26/tmf_pipe_out_offset/"
+}
 out_path = paste0("/maps/epr26/ex_ante_forecast_out/out_", analysis_type) #where outputs are stored
-projects_to_exclude = c("674", "934", "2502", "1408", "1686", "2558") #which projects to exclude manually @@@redo 1686!!!
+fig_path = paste0("/maps/epr26/ex_ante_forecast_out/out_") #where figures are stored
+projects_to_exclude = c("674", "934", "2502", "1408") #which projects to exclude manually
 
 #Based on analysis type, find project names and store in vector "projects", and project basic info and store in dataframe "proj_info"
 if(analysis_type == "ongoing") {
@@ -287,6 +295,9 @@ for(i in seq_along(projects)) {
         do.call(rbind, .) %>%
         mutate(project = projects[i])
 
+    write.csv(additionality, paste0(out_path, "_additionality_", projects[i], ".csv"), row.names = F)
+    write.csv(baseline_best, paste0(out_path, "_baseline_best_", projects[i], ".csv"), row.names = F)
+
     matches = setM[[i]] %>%
       dplyr::select(-starts_with("luc_")) %>%
       dplyr::select(-starts_with("cpc")) %>%
@@ -299,6 +310,8 @@ for(i in seq_along(projects)) {
                c_loss = (acd10 - acd0) / 10) %>%
         dplyr::select(c_loss) %>%
         mutate(project = projects[i])
+
+    write.csv(baseline_loose, paste0(out_path, "_baseline_loose_", projects[i], ".csv"), row.names = F)
 
     baseline_offset = data.frame(c_loss = numeric())
     if(!(is.null(setK_offset[[i]]) | is.null(setM_offset[[i]]))) {
@@ -321,34 +334,245 @@ for(i in seq_along(projects)) {
             mutate(project = projects[i])
     }
 
-    write.csv(additionality, paste0(out_path, "_additionality_", projects[i], ".csv"), row.names = F)
-    write.csv(baseline_best, paste0(out_path, "_baseline_best_", projects[i], ".csv"), row.names = F)
-    write.csv(baseline_loose, paste0(out_path, "_baseline_loose_", projects[i], ".csv"), row.names = F)
     write.csv(baseline_offset, paste0(out_path, "_baseline_offset_", projects[i], ".csv"), row.names = F)
 }
 
 
 # C. Bootstrap baselines ----
+observed_cf_c_loss_boot_list = vector("list", length(projects))
+observed_p_c_loss_boot_list = vector("list", length(projects))
 baseline_best_boot_list = vector("list", length(projects))
 baseline_loose_boot_list = vector("list", length(projects))
 baseline_offset_boot_list = vector("list", length(projects))
 
 for(i in seq_along(projects)) {
+    area_i = project_var$area_ha[i]
+    additionality = read.csv(paste0(out_path, "_additionality_", projects[i], ".csv"), header = T) %>%
+        mutate(t_loss = t_loss / area_i,
+               c_loss = c_loss / area_i)
     baseline_best = read.csv(paste0(out_path, "_baseline_best_", projects[i], ".csv"), header = T)
     baseline_loose = read.csv(paste0(out_path, "_baseline_loose_", projects[i], ".csv"), header = T)
     baseline_offset = read.csv(paste0(out_path, "_baseline_offset_", projects[i], ".csv"), header = T)
 
-    baseline_best_boot_list[[i]] = BootSumm(type = "best", in_df = dplyr::select(baseline_loose, c_loss)) %>%
+    time_a = Sys.time()
+    observed_cf_c_loss_boot_list[[i]] = BootSumm(type = "cf_c_loss", in_df = dplyr::select(additionality, c_loss)) %>%
         mutate(project = projects[i])
-    baseline_loose_boot_df = BootSumm(type = "loose", in_df = dplyr::select(baseline_loose, c_loss)) %>%
+    time_b = Sys.time()
+    cat("Project", i, "/", length(projects), "-", projects[i], "- cf_c_loss_boot :", time_b - time_a, "\n")
+
+    observed_p_c_loss_boot_list[[i]] = BootSumm(type = "p_c_loss", in_df = dplyr::select(additionality, t_loss)) %>%
         mutate(project = projects[i])
-    baseline_offset_boot_df = BootSumm(type = "offset", in_df = dplyr::select(baseline_offset, c_loss)) %>%
+    time_c = Sys.time()
+    cat("Project", i, "/", length(projects), "-", projects[i], "- p_c_loss_boot :", time_c - time_b, "\n")
+
+    baseline_best_boot_list[[i]] = BootSumm(type = "best", in_df = dplyr::select(baseline_best, c_loss)) %>%
         mutate(project = projects[i])
+    time_d = Sys.time()
+    cat("Project", i, "/", length(projects), "-", projects[i], "- baseline_best_boot :", time_d - time_c, "\n")
+
+    baseline_loose_boot_list[[i]] = BootSumm(type = "loose", in_df = dplyr::select(baseline_loose, c_loss)) %>%
+        mutate(project = projects[i])
+    time_e = Sys.time()
+    cat("Project", i, "/", length(projects), "-", projects[i], "- baseline_loose_boot :", time_e - time_d, "\n")
+
+    if(nrow(baseline_offset) > 0) {
+        baseline_offset_boot_list[[i]] = BootSumm(type = "offset", in_df = dplyr::select(baseline_offset, c_loss)) %>%
+            mutate(project = projects[i])
+    } else {
+        baseline_offset_boot_list[[i]] = data.frame(type = character(), mean = numeric(), ci_lower = numeric(), ci_upper = numeric(), project = character())
+    }
+    time_f = Sys.time()
+    cat("Project", i, "/", length(projects), "-", projects[i], "- baseline_offset_boot :", time_f - time_e, "\n")
+
 }
 
-write.csv(baseline_best_boot_list %>% do.call(rbind, .), paste0(out_path, "_baseline_best_boot.csv"), row.names = F)
-write.csv(baseline_loose_boot_list %>% do.call(rbind, .), paste0(out_path, "_baseline_loose_boot.csv"), row.names = F)
-write.csv(baseline_offset_boot_list %>% do.call(rbind, .), paste0(out_path, "_baseline_offset_boot.csv"), row.names = F)
+observed_cf_c_loss_boot_df = do.call(rbind, observed_cf_c_loss_boot_list)
+observed_p_c_loss_boot_df = do.call(rbind, observed_p_c_loss_boot_list)
+baseline_best_boot_df = do.call(rbind, baseline_best_boot_list)
+baseline_loose_boot_df = do.call(rbind, baseline_loose_boot_list)
+baseline_offset_boot_df = do.call(rbind, baseline_offset_boot_list)
+
+write.csv(observed_cf_c_loss_boot_df, paste0(out_path, "_observed_cf_c_loss.csv"), row.names = F)
+write.csv(observed_p_c_loss_boot_df, paste0(out_path, "_observed_p_c_loss.csv"), row.names = F)
+write.csv(baseline_best_boot_df, paste0(out_path, "_baseline_best_boot.csv"), row.names = F)
+write.csv(baseline_loose_boot_df, paste0(out_path, "_baseline_loose_boot.csv"), row.names = F)
+write.csv(baseline_offset_boot_df, paste0(out_path, "_baseline_offset_boot.csv"), row.names = F)
+
+observed_cf_c_loss_boot_df = read.csv(paste0(out_path, "_observed_cf_c_loss.csv"), header = T)
+observed_p_c_loss_boot_df = read.csv(paste0(out_path, "_observed_cf_c_loss.csv"), header = T)
+baseline_best_boot_df = read.csv(paste0(out_path, "_baseline_best_boot.csv"), header = T)
+baseline_loose_boot_df = read.csv(paste0(out_path, "_baseline_loose_boot.csv"), header = T)
+baseline_offset_boot_df = read.csv(paste0(out_path, "_baseline_offset_boot.csv"), header = T)
+
+
+# D. Generate results ----
+
+if(analysis_type == "control") {
+    continent_name = c(as = "Asia", af = "Africa", sa = "South America")
+    c_loss_control_summ_wide = rbind(observed_cf_c_loss_boot_df, observed_p_c_loss_boot_df) %>%
+        dplyr::select(type, mean, project) %>%
+        pivot_wider(names_from = "type", values_from = "mean", id_expand = T) %>%
+        mutate(Continent = continent_name[str_sub(project, 1, 2)])
+
+    c_loss_control_summ_wide = do.call(bind_rows, list(observed_cf_c_loss_boot_df,
+                                                       observed_p_c_loss_boot_df,
+                                                       baseline_best_boot_df,
+                                                       baseline_loose_boot_df,
+                                                       baseline_offset_boot_df)) %>%
+        dplyr::select(type, mean, project) %>%
+        pivot_wider(names_from = "type", values_from = "mean", id_expand = T) %>%
+        mutate(Continent = continent_name[str_sub(project, 1, 2)],
+               c_loss_min = pmin(best, loose, offset, na.rm = T),
+               c_loss_max = pmax(best, loose, offset, na.rm = T))
+
+    c_loss_control_summ = c_loss_control_summ_wide %>%
+        pivot_longer(best:offset, names_to = "baseline_type", values_to = "baseline")
+
+
+    #Figure 4. show that there is no bias in our counterfactuals
+    ggplot(data = c_loss_control_summ_wide, aes(x = p_c_loss, y = cf_c_loss)) +
+        geom_point(aes(shape = Continent, color = Continent, fill = Continent), size = 4) +
+        geom_abline(intercept = 0, slope = 1, linetype = 2) +
+        scale_shape_manual(values = c(Asia = 1, Africa = 3, `South America` = 18)) +
+        scale_color_manual(values = c(Asia = "blue", Africa = "black", `South America` = "red")) +
+        scale_fill_manual(values = c(Asia = NA, Africa = NA, `South America` = "red")) +
+        scale_x_continuous(limits = c(-0.2, 2.6), expand = c(0, 0)) + #ensures no padding
+        scale_y_continuous(limits = c(-0.2, 2.6), expand = c(0, 0)) +
+        labs(x = "Observed project carbon loss (MgC/ha/yr)",
+             y = "Observed counterfactual carbon loss (MgC/ha/yr)") +
+        theme_bw() +
+        theme(panel.grid = element_blank(),
+              axis.title = element_text(size = 18),
+              axis.text = element_text(size = 16),
+              legend.title = element_text(size = 16),
+              legend.text = element_text(size = 14),
+              legend.position = "bottom")
+    ggsave(paste0(fig_path, "figure4_c_loss_p_vs_cf_post.png"), width = 2500, height = 2600, units = "px")
+
+    #calculate RMSE and MAE
+    p_c_loss_val = na.omit(c_loss_control_summ_wide)$p_c_loss
+    cf_c_loss_val = na.omit(c_loss_control_summ_wide)$cf_c_loss
+
+    Metrics::rmse(p_c_loss_val, cf_c_loss_val)
+    Metrics::mae(p_c_loss_val, cf_c_loss_val)
+
+    #Figure 5. show how baseline compares to counterfactual carbon loss in non-project areas
+    ggplot(data = c_loss_control_summ, aes(x = baseline, y = cf_c_loss)) +
+        geom_point(aes(shape = baseline_type, color = baseline_type, fill = baseline_type), size = 4) +
+        geom_segment(data = c_loss_control_summ_wide, aes(x = c_loss_min, xend = c_loss_max, y = cf_c_loss), linetype = 3) +
+#        geom_text(data = c_loss_control_summ_wide, aes(x = c_loss_max, y = cf_c_loss, label = project), hjust = -0.5, size = 5) +
+        geom_abline(intercept = 0, slope = 1, linetype = 2) +
+        scale_shape_manual(values = c(best = 16, loose = 18, offset = 17),
+                           labels = c("Best-matched", "Loosely-matched", "Time-lagged")) +
+        scale_color_manual(values = c(best = "blue", loose = "red", offset = "purple"),
+                           labels = c("Best-matched", "Loosely-matched", "Time-lagged")) +
+        scale_fill_manual(values = c(best = "blue", loose = "red", offset = "purple"),
+                          labels = c("Best-matched", "Loosely-matched", "Time-lagged")) +
+            scale_x_continuous(limits = c(-0.1, 2.4), expand = c(0.01, 0.01)) +
+            scale_y_continuous(limits = c(-0.1, 2.4), expand = c(0.01, 0.01)) +
+        labs(x = "Baseline carbon loss (MgC/ha/yr)",
+             y = "Observed counterfactual carbon loss (MgC/ha/yr)",
+             shape = "Baseline type",
+             color = "Baseline type",
+             fill = "Baseline type") +
+        theme_bw() +
+        theme(panel.grid = element_blank(),
+              axis.title = element_text(size = 18),
+              axis.text = element_text(size = 16),
+              legend.title = element_text(size = 16),
+              legend.text = element_text(size = 14),
+              legend.position = "bottom")
+    ggsave(paste0(fig_path, "figure5_control_baseline_vs_c_loss_cf.png"), width = 2500, height = 3500, units = "px")
+
+
+    ggplot(data = subset(c_loss_control_summ, baseline_type == "best"), aes(x = baseline, y = cf_c_loss)) +
+        geom_point(shape = 16, color = "blue", fill = "blue", size = 4) +
+        geom_abline(intercept = 0, slope = 1, linetype = 2) +
+        scale_x_continuous(limits = c(-0.1, 2.4), expand = c(0.01, 0.01)) +
+        scale_y_continuous(limits = c(-0.1, 2.4), expand = c(0.01, 0.01)) +
+        labs(x = "Best-matched baseline carbon loss (MgC/ha/yr)",
+             y = "Observed counterfactual carbon loss (MgC/ha/yr)") +
+        theme_bw() +
+        theme(panel.grid = element_blank(),
+              axis.title = element_text(size = 20),
+              axis.text = element_text(size = 18))
+    ggsave(paste0(fig_path, "figure5a_control_baseline_best_vs_c_loss_cf.png"), width = 2500, height = 5000, units = "px")
+
+    ggplot(data = subset(c_loss_control_summ, baseline_type == "loose"), aes(x = baseline, y = cf_c_loss)) +
+        geom_point(shape = 18, color = "red", fill = "red", size = 4) +
+        geom_abline(intercept = 0, slope = 1, linetype = 2) +
+        scale_x_continuous(limits = c(-0.1, 2.4), expand = c(0.01, 0.01)) +
+        scale_y_continuous(limits = c(-0.1, 2.4), expand = c(0.01, 0.01)) +
+        labs(x = "Loosely=matched baseline carbon loss (MgC/ha/yr)",
+             y = "Observed counterfactual carbon loss (MgC/ha/yr)") +
+        theme_bw() +
+        theme(panel.grid = element_blank(),
+              axis.title = element_text(size = 20),
+              axis.text = element_text(size = 18))
+    ggsave(paste0(fig_path, "figure5b_control_baseline_loose_vs_c_loss_cf.png"), width = 2500, height = 5000, units = "px")
+
+    ggplot(data = subset(c_loss_control_summ, baseline_type == "offset"), aes(x = baseline, y = cf_c_loss)) +
+        geom_point(shape = 17, color = "purple", fill = "purple", size = 4) +
+        geom_abline(intercept = 0, slope = 1, linetype = 2) +
+        scale_x_continuous(limits = c(-0.1, 2.4), expand = c(0.01, 0.01)) +
+        scale_y_continuous(limits = c(-0.1, 2.4), expand = c(0.01, 0.01)) +
+        labs(x = "Time-offsetted baseline carbon loss (MgC/ha/yr)",
+             y = "Observed counterfactual carbon loss (MgC/ha/yr)") +
+        theme_bw() +
+        theme(panel.grid = element_blank(),
+              axis.title = element_text(size = 20),
+              axis.text = element_text(size = 18))
+    ggsave(paste0(fig_path, "figure5c_control_baseline_offset_vs_c_loss_cf.png"), width = 2500, height = 5000, units = "px")
+
+    #calculate RMSE and MAE of each baseline compared to observed counterfactual C loss
+    p_c_loss_val = na.omit(c_loss_control_summ_wide)$p_c_loss
+    cf_c_loss_val = na.omit(c_loss_control_summ_wide)$cf_c_loss
+    best_val = na.omit(c_loss_control_summ_wide)$best
+    loose_val = na.omit(c_loss_control_summ_wide)$loose
+    offset_val = na.omit(c_loss_control_summ_wide)$offset
+
+    error_df = data.frame(error_type = rep(c("rmse", "mae"), each = 3),
+                          baseline_type = rep(c("best", "loose", "offset"), 2),
+                          val = c(rmse(cf_c_loss_val, best_val), rmse(cf_c_loss_val, loose_val), rmse(cf_c_loss_val, offset_val),
+                                  mae(cf_c_loss_val, best_val), mae(cf_c_loss_val, loose_val), mae(cf_c_loss_val, offset_val)))
+    write.csv(error_df, paste0(out_path, "_error.csv"), row.names = F)
+}
+
+if(analysis_type == "ongoing") {
+    c_loss_ongoing_summ_wide = do.call(bind_rows, list(observed_cf_c_loss_boot_df,
+                                                       baseline_best_boot_df,
+                                                       baseline_loose_boot_df,
+                                                       baseline_offset_boot_df)) %>%
+        dplyr::select(type, mean, project) %>%
+        pivot_wider(names_from = "type", values_from = "mean", id_expand = T) %>%
+        mutate(c_loss_min = pmin(best, loose, offset, na.rm = T),
+               c_loss_max = pmax(best, loose, offset, na.rm = T))
+
+    c_loss_ongoing_summ = c_loss_ongoing_summ_wide %>%
+        pivot_longer(best:offset, names_to = "baseline_type", values_to = "baseline")
+
+    #Figure 6. show how baseline compares to counterfactual carbon loss in ongoing projects
+    plotBaseline(type = "all", use_log10 = T)
+    plotBaseline(type = "all", use_log10 = F)
+    plotBaseline(type = "best", use_log10 = T)
+    plotBaseline(type = "best", use_log10 = F)
+    plotBaseline(type = "loose", use_log10 = T)
+    plotBaseline(type = "loose", use_log10 = F)
+    plotBaseline(type = "offset", use_log10 = T)
+    plotBaseline(type = "offset", use_log10 = F)
+
+    #calculate RMSE and MAE of each baseline compared to observed counterfactual C loss
+    cf_c_loss_val = na.omit(c_loss_ongoing_summ_wide)$cf_c_loss
+    best_val = na.omit(c_loss_ongoing_summ_wide)$best
+    loose_val = na.omit(c_loss_ongoing_summ_wide)$loose
+    offset_val = na.omit(c_loss_ongoing_summ_wide)$offset
+
+    error_df = data.frame(error_type = rep(c("rmse", "mae"), each = 3),
+                          baseline_type = rep(c("best", "loose", "offset"), 2),
+                          val = c(rmse(cf_c_loss_val, best_val), rmse(cf_c_loss_val, loose_val), rmse(cf_c_loss_val, offset_val),
+                                  mae(cf_c_loss_val, best_val), mae(cf_c_loss_val, loose_val), mae(cf_c_loss_val, offset_val)))
+    write.csv(error_df, paste0(out_path, "_error.csv"), row.names = F)
+}
 
 
 #OPTIONAL output: only basic variables, additionality distribution data to send to Ofir
@@ -357,10 +581,12 @@ if(ofir) {
                 paste0(out_path, "_project_var_basic.csv"), sep = ",", row.names = F)
 
     additionality_distribution = lapply(seq_along(projects), function(i) {
-        additionality_estimates[[i]] %>%
-        filter(started) %>%
-        dplyr::select(year, additionality, pair) %>%
-        mutate(project = projects[i])
+        additionality = read.csv(paste0(out_path, "_additionality_", projects[i], ".csv"), header = T)
+
+        additionality %>%
+            filter(started) %>%
+            dplyr::select(year, additionality, pair) %>%
+            mutate(project = projects[i])
     }) %>%
         do.call(rbind, .)
     write.csv(additionality_distribution, paste0("/maps/epr26/tmf_pipe_out/additionality_distribution.csv"), row.names = F)
