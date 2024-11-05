@@ -4,7 +4,7 @@ rm(list = ls())
 #Load packages
 # install.packages(c("arrow","configr", "tidyverse", "magrittr", "sf", "magrittr", "MatchIt",
 #                    "rnaturalearthdata", "configr", "terra", "pbapply", "cleangeo", "doParallel",
-#                    "foreach", "readr", "lwgeom", "rnaturalearth", "stars", "Metrics"), depends = TRUE)
+#                    "foreach", "readr", "lwgeom", "rnaturalearth", "stars", "Metrics", "patchwork"), depends = TRUE)
 
 library(tidyverse) #ggplot2, dplyr, stringr
 library(magrittr) #pipe operators
@@ -15,9 +15,8 @@ library(MatchIt) #MatchIt::matchit
 library(boot) #boot::boot
 library(Metrics) #rmse, mae
 library(scales) #scales::trans_break
+library(patchwork)
 #library(pryr) #pryr::object_size
-#library(ggpubr) #ggpubr::ggarrange
-#library(cowplot)
 #library(parallel) #parallel::mclapply
 
 #Remove dplyr summarise grouping message because it prints a lot
@@ -450,6 +449,11 @@ if(analysis_type == "control") {
     p1 = plotBaseline(dat = c_loss_control_summ, baseline_used = "best", use_log10 = T)
     p2 = plotBaseline(dat = c_loss_control_summ, baseline_used = "loose", use_log10 = T)
     p3 = plotBaseline(dat = c_loss_control_summ, baseline_used = "offset", use_log10 = T)
+    p1 + p2 + p3 +
+      plot_layout(axis_titles = "collect", guides = "collect") &
+      theme(legend.position = "bottom")
+    ggsave(paste0(fig_path, "figure5_control_baseline_vs_cf_c_loss_grouped.png"), width = 5000, height = 2500, units = "px")
+
 
     #calculate RMSE and MAE of each baseline compared to observed counterfactual C loss
     p_c_loss_val = na.omit(c_loss_control_summ)$p_c_loss
@@ -477,9 +481,14 @@ if(analysis_type == "ongoing") {
 
     #Figure 6. show how baseline compares to counterfactual carbon loss in ongoing projects
     plotBaseline(dat = c_loss_ongoing_summ, baseline_used = "all", use_log10 = T)
-    plotBaseline(dat = c_loss_ongoing_summ, baseline_used = "best", use_log10 = T)
-    plotBaseline(dat = c_loss_ongoing_summ, baseline_used = "loose", use_log10 = T)
-    plotBaseline(dat = c_loss_ongoing_summ, baseline_used = "offset", use_log10 = T)
+
+    p1 = plotBaseline(dat = c_loss_ongoing_summ, baseline_used = "best", use_log10 = T)
+    p2 = plotBaseline(dat = c_loss_ongoing_summ, baseline_used = "loose", use_log10 = T)
+    p3 = plotBaseline(dat = c_loss_ongoing_summ, baseline_used = "offset", use_log10 = T)
+    (p1 + p2 + p3) +
+      plot_layout(axis_titles = "collect")
+    ggsave(paste0(fig_path, "figure6_ongoing_baseline_vs_cf_c_loss_grouped.png"), width = 7500, height = 5000, units = "px")
+
 
     #calculate RMSE and MAE of each baseline compared to observed counterfactual C loss
     cf_c_loss_val = na.omit(c_loss_ongoing_summ)$cf_c_loss

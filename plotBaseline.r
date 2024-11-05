@@ -23,11 +23,16 @@ plotBaseline = function(dat, baseline_used, use_log10) {
         "offset" = "baseline_offset")
     fig_name = paste0("figure", fig_num, fig_ind, "_", analysis_type, "_", fig_baseline_type, "_vs_cf_c_loss")
 
-    fig_color = case_when(
-        baseline_used == "best" ~ "blue",
-        baseline_used == "loose" ~ "red",
-        baseline_used == "offset" ~ "purple",
-        .default = "black")
+    fig_color = switch(baseline_used,
+        "all" = "black",
+        "best" = "blue",
+        "loose" = "red",
+        "offset" = "purple")
+    fig_title = switch(baseline_used,
+        "all" = "",
+        "best" = "Best-matched",
+        "loose" = "Loosely-matched",
+        "offset" = "Time-lagged")
 
     if(use_log10) {
         dat_long = dat_long %>%
@@ -94,18 +99,20 @@ plotBaseline = function(dat, baseline_used, use_log10) {
                            transform = ifelse(use_log10, "log10", "identity"),
                            breaks = if (use_log10) trans_breaks("log10", function(x) 10 ^ x) else waiver(),
                            labels = if (use_log10) trans_format("log10", math_format(10 ^ .x)) else waiver()) +
-        labs(x = "Baseline carbon loss (MgC/ha/yr)",
+        labs(title = fig_title,
+             x = "Baseline carbon loss (MgC/ha/yr)",
              y = "Observed counterfactual carbon loss (MgC/ha/yr)",
              color = "Baseline type",
              fill = "Baseline type") +
         theme_bw() +
         theme(panel.grid = element_blank(),
-              axis.title = element_text(size = 18),
-              axis.text = element_text(size = 16),
-              legend.title = element_text(size = 16),
-              legend.text = element_text(size = 14),
+              axis.title = element_text(size = 22),
+              axis.text = element_text(size = 20),
+              legend.title = element_text(size = 22),
+              legend.text = element_text(size = 20),
               legend.position = "bottom",
-              legend.box = "vertical")
+              legend.box = "vertical",
+              plot.title = element_text(size = 24, hjust = 0.5))
 
     if(plot_partial & analysis_type == "ongoing") {
         p = p +
@@ -113,23 +120,7 @@ plotBaseline = function(dat, baseline_used, use_log10) {
     }
 
     file_path = paste0(fig_path, fig_name, ifelse(use_log10, "_log10", ""), ".png")
-    cat(file_path, "\n")
+#    cat(file_path, "\n")
     ggsave(file_path, plot = p, width = 2500, height = 5000, units = "px")
     return(p)
-        # scale_x_continuous(limits = c(exp(-8), exp(0.4)), expand = c(0.01, 0.01),
-        #                 transform = transform_log(),
-        #                 breaks = trans_breaks("log", function(x) exp(x)),
-        #                 labels = trans_format("log", math_format(e ^ .x))) +
-        # scale_y_continuous(limits = c(exp(-8), exp(0.4)), expand = c(0.01, 0.01),
-        #                 transform = transform_log(),
-        #                 breaks = trans_breaks("log", function(x) exp(x)),
-        #                 labels = trans_format("log", math_format(e ^ .x))) +
-        # scale_x_continuous(limits = c(2 ^ (-12), 2 ^ 0.6), expand = c(0.01, 0.01),
-        #                 transform = transform_log2(),
-        #                 breaks = trans_breaks("log2", function(x) 2 ^ x),
-        #                 labels = trans_format("log2", math_format(2 ^ .x))) +
-        # scale_y_continuous(limits = c(2 ^ (-6), 2 ^ 0.6), expand = c(0.01, 0.01),
-        #                 transform = transform_log2(),
-        #                 breaks = trans_breaks("log2", function(x) 2 ^ x),
-        #                 labels = trans_format("log2", math_format(2 ^ .x))) +
 }
