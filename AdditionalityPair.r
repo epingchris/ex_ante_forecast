@@ -1,4 +1,4 @@
-  AdditionalityPair_new = function(pair_dir, t0, area_ha, acd, k, matches, offset) {
+  AdditionalityPair = function(pair_dir, t0, area_ha, acd, k, matches, offset) {
     #find paths to match and unmatached points in each sampled pairs
     pair_paths = FindFiles(pair_dir, ".parquet", full = T)
     matched_paths = pair_paths %>% str_subset("matchless", negate = T)

@@ -26,13 +26,13 @@ shp_id = list.files("/maps/epr26/tmf-data/projects") %>%
   str_replace("a", "")
 shp_id = shp_id[!shp_id %in% c("0000", "9999")] #test polygons
 shp_id = shp_id[!shp_id %in% union(incomplete_acd_id, done_id)] #incomplete ACD data, done
-shp_id = shp_id[!shp_id %in% c("1359", "902", "3347", "3335", "3114")] #withdrawn and on hold and under development
+shp_id = shp_id[!shp_id %in% c("1359", "902", "3347", "3335", "3114", "2760")] #withdrawn, rejected, on hold, under development
 #shp_id = shp_id[!shp_id %in% c("1566", "1067", "958", "1133")] #problematic results: why did I say that?
 
 #find t0
 proj_candidate = read.csv("proj_meta.csv") %>%
   filter(ID %in% shp_id) %>%
-  filter(t0 >= 2007 & t0 <= 2017)
+  filter(t0 >= 2010 & t0 <= 2017)
 
 proj_done = read.csv("proj_meta.csv") %>%
   filter(ID %in% done_id)
