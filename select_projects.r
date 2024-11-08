@@ -1,30 +1,38 @@
+#Code to find the subset of projects that are waiting to be run
+
+library(tidyverse) #ggplot2, dplyr, stringr
+library(magrittr) #pipe operators
+
+#projects that are already done
+project_status = read.csv("/maps/epr26/tmf_pipe_out/project_status.csv", header = T)
+done_id = subset(project_status, done)$project
+
+#projects without complete ACD: from past and present results
 acd_dir = "/maps/pf341/results/live-pipeline/"
-acd_id = list.files(acd_dir, full = TRUE) %>%
+acd_id = list.files(acd_dir) %>%
   str_subset("carbon-density") %>%
-  basename() %>%
   str_replace("-carbon-density.csv", "")
-
-project_dir = "/maps/pf341/results/2024-january-pipeline"
-project_id_full = list.files(project_dir, full = TRUE) %>%
-  str_subset("pairs") %>%
-  basename() %>%
-  str_replace("_pairs", "")
-project_id = project_id_full[project_id_full %in% acd_id]
-
-acd_list = lapply(project_id, function(x) {
+acd_list = lapply(acd_id, function(x) {
   acd = read.csv(paste0(acd_dir, x, "-carbon-density.csv"))
 })
-names(acd_list) = project_id
-acd_list[which(sapply(acd_list, nrow) < 4)]
-acd_exclude = project_id[which(sapply(acd_list, nrow) < 4)]
+incomplete_acd_id = acd_id[which(sapply(acd_list, nrow) < 4)] %>%
+  union(subset(project_status, !full_acd)$project %>% str_replace("a", ""))
 
-shp_id = list.files("/maps/epr26/tmf-data/projects", full = TRUE) %>%
-  basename() %>%
-  str_replace(".geojson", "")
+#select from available shapefiles
+shp_id = list.files("/maps/epr26/tmf-data/projects") %>%
+  str_replace(".geojson", "") %>%
+  str_subset("ac", negate = T) %>%
+  str_subset("as", negate = T) %>%
+  str_replace("a", "")
 shp_id = shp_id[!shp_id %in% c("0000", "9999")] #test polygons
-shp_id = shp_id[!shp_id %in% c("1566", "1067", "958", "1133")] #problematic results
-shp_id = shp_id[!shp_id %in% acd_exclude] #incomplete ACD data
-shp_id = shp_id[!shp_id %in% c("1359", "902", "3347", "3335", "3114")] #withdrawn and on hold and under development
+shp_id = shp_id[!shp_id %in% union(incomplete_acd_id, done_id)] #incomplete ACD data, done
+shp_id = shp_id[!shp_id %in% c("1359", "902", "3347", "3335", "3114", "2760")] #withdrawn, rejected, on hold, under development
+#shp_id = shp_id[!shp_id %in% c("1566", "1067", "958", "1133")] #problematic results: why did I say that?
 
-proj_meta = read.csv("/home/tws36/4c_evaluations/data/project_metadata/proj_meta.csv") #for t0
-proj_meta %>% filter(ID %in% as.numeric(shp_id))
+#find t0
+proj_candidate = read.csv("proj_meta.csv") %>%
+  filter(ID %in% shp_id) %>%
+  filter(t0 >= 2010 & t0 <= 2017)
+
+proj_done = read.csv("proj_meta.csv") %>%
+  filter(ID %in% done_id)
