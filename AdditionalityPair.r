@@ -54,8 +54,8 @@
         match_years = c(0, -5, -10)
         match_classes = c(1, 3)
         luc_series = simulate_area_series(pts_matched, class_prefix = class_prefix, t0 = t0,
-                                        match_years = match_years, match_classes = match_classes,
-                                        exp_n = exp_n_pairs, area = area_ha, verbose = F, offset = offset)
+                                          match_years = match_years, match_classes = match_classes,
+                                          exp_n = exp_n_pairs, area = area_ha, verbose = F, offset = offset)
 
         #calculate annual carbon stock (MgC)
         carbon_series = luc_series$series %>%
