@@ -33,7 +33,7 @@ tmfemi_reformat = function(df, t0) {
 
 simulate_area_series = function(pts_matched,
                                 class_prefix, t0, match_years, match_classes,
-                                exp_n, area, verbose = T, offset = F) {
+                                exp_n, area, verbose = T, lagged = F) {
   match_assess = summary(assess_balance(pts_matched, class_prefix, t0 = t0, match_years, match_classes))
   balance_test = all(abs(match_assess$sum.matched[, 'Std. Mean Diff.']) <= 0.2)
 
@@ -47,7 +47,7 @@ simulate_area_series = function(pts_matched,
   area = area * match_sample_adj
   # print(area)
 
-  area_series = make_area_series(pts_matched %>% na.omit(), area_ha = area, class_prefix = class_prefix, offset = offset)
+  area_series = make_area_series(pts_matched %>% na.omit(), area_ha = area, class_prefix = class_prefix, lagged = lagged)
   out = list(series = area_series, balance = match_assess$sum.matched)
   return(out)
   # }
@@ -55,8 +55,8 @@ simulate_area_series = function(pts_matched,
   #   return(NULL)
 }
 
-make_area_series = function(pts, area_ha, class_prefix, offset = F) {
-  if(offset) {
+make_area_series = function(pts, area_ha, class_prefix, lagged = F) {
+  if(lagged) {
     pts_years_selected = pts[str_detect(colnames(pts), paste0(class_prefix, "\\.?[:digit:]{1}$|", class_prefix, "\\.?[:digit:]{2}$|treatment"))]
   } else {
     pts_years_selected = pts[str_detect(colnames(pts), paste0(class_prefix, '[:digit:]{4}$|treatment'))]
@@ -83,7 +83,7 @@ make_area_series = function(pts, area_ha, class_prefix, offset = F) {
                  names_prefix = class_prefix,
                  names_sep = '_',
                  values_to = 'n') %>%
-    # For when offset = T: change dot to minus sign before converting to numeric
+    # For when lagged = T: change dot to minus sign before converting to numeric
     mutate(year = gsub("\\.", "\\-", year)) %>%
     # Convert from character to numeric
     mutate(across(year, as.numeric)) %>%

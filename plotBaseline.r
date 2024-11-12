@@ -20,13 +20,13 @@ plotBaseline = function(dat, baseline_used, use_log10, size_vec) {
     dat_wide = dat %>%
         dplyr::select(-c(ci_lower, ci_upper)) %>%
         pivot_wider(names_from = "type", values_from = "mean", id_expand = T) %>%
-        mutate(c_loss_min = pmin(best, loose, offset, na.rm = T),
-               c_loss_max = pmax(best, loose, offset, na.rm = T))
+        mutate(c_loss_min = pmin(best, loose, lagged, na.rm = T),
+               c_loss_max = pmax(best, loose, lagged, na.rm = T))
 
     dat_long = dat_wide %>%
-        pivot_longer(best:offset, names_to = "baseline_type", values_to = "baseline")
+        pivot_longer(best:lagged, names_to = "baseline_type", values_to = "baseline")
 
-    plot_partial = baseline_used %in% c("best", "loose", "offset")
+    plot_partial = baseline_used %in% c("best", "loose", "lagged")
     if(plot_partial) {
         dat_long = subset(dat_long, baseline_type == baseline_used)
         dat_wide = dat_wide %>%
@@ -40,12 +40,12 @@ plotBaseline = function(dat, baseline_used, use_log10, size_vec) {
         "all" = "black",
         "best" = "blue",
         "loose" = "red",
-        "offset" = "purple")
+        "lagged" = "purple")
     fig_title = switch(baseline_used,
         "all" = "",
         "best" = "Best-matched",
         "loose" = "Loosely-matched",
-        "offset" = "Time-lagged")
+        "lagged" = "Time-lagged")
 
     if(use_log10) {
         dat_long = dat_long %>%
@@ -87,16 +87,16 @@ plotBaseline = function(dat, baseline_used, use_log10, size_vec) {
             geom_point(aes(shape = baseline_type, color = baseline_type, fill = baseline_type), size = 3) +
             geom_text(data = dat_wide, aes(x = text_pos, y = cf_c_loss, label = project),
                     hjust = hjust_val, size = 7) +
-            scale_shape_manual(values = c(best = 16, loose = 18, offset = 17),
+            scale_shape_manual(values = c(best = 16, loose = 18, lagged = 17),
                             labels = c("Best-matched", "Loosely-matched", "Time-lagged")) +
             labs(shape = "Baseline type")
     }
     p = p +
         geom_abline(intercept = 0, slope = 1, linetype = 3) +
         geom_abline(intercept = lm_out$coefficients[1], slope = lm_out$coefficients[2], linetype = ifelse(plot_partial, 2, 0), color = fig_color) +
-        scale_color_manual(values = c(best = "blue", loose = "red", offset = "purple"),
+        scale_color_manual(values = c(best = "blue", loose = "red", lagged = "purple"),
                            labels = c("Best-matched", "Loosely-matched", "Time-lagged"), guide = ifelse(plot_partial, "none", "legend")) +
-        scale_fill_manual(values = c(best = "blue", loose = "red", offset = "purple"),
+        scale_fill_manual(values = c(best = "blue", loose = "red", lagged = "purple"),
                           labels = c("Best-matched", "Loosely-matched", "Time-lagged"), guide = ifelse(plot_partial, "none", "legend")) +
         scale_x_continuous(limits = x_limit, expand = c(0.01, 0.01),
                            transform = ifelse(use_log10, "log10", "identity"),
