@@ -1,4 +1,4 @@
-plotBaseline = function(dat, baseline_used, note_x, note_y) {
+plotBaseline = function(dat, baseline_used, add_label = F) {
     summ_wide_mean = dat %>%
         dplyr::select(type, mean, project) %>%
         pivot_wider(names_from = "type", values_from = "mean") %>%
@@ -46,7 +46,9 @@ plotBaseline = function(dat, baseline_used, note_x, note_y) {
     #     dplyr::select(project, ci_lower, ci_upper) %>%
     #     left_join(dat_x_mean, by = "project")
 
-    dat_wide = summ_wide_mean %>%
+    dat_wide = dat %>%
+        dplyr::select(type, mean, project, code) %>%
+        pivot_wider(names_from = "type", values_from = "mean") %>%
         mutate(c_loss_min = pmin(best, loose, lagged, na.rm = T),
                c_loss_max = pmax(best, loose, lagged, na.rm = T))
 
@@ -76,34 +78,43 @@ plotBaseline = function(dat, baseline_used, note_x, note_y) {
     mae = mae(na.omit(dat_long)$cf_c_loss, na.omit(dat_long)$baseline) %>% round(., 3)
     # note_text1 = bquote(R^2 ~ ": " ~ .(r2))
     note_df = tibble(
-        x = note_x,
-        y = note_y,
+        x = 2.5,
+        y = c(0.1, -0.1),
         text = list(bquote("RMSE: " ~ .(rmse)),
                     bquote("MAE: " ~ .(mae)))
     )
 
-    size_vec = c(40, 32, 28)
-
-    p = ggplot(data = dat_long, aes(x = baseline, y = cf_c_loss)) +
-#        geom_text(aes(label = project), hjust = -0.1, size = 5, parse = T) +
-        geom_segment(data = summ_ci_x, aes(x = x0, xend = x1, y = y, color = baseline_type)) +
-        geom_segment(data = summ_ci_y, aes(x = x, y = y0, yend = y1, color = baseline_type)) +
-        geom_abline(intercept = 0, slope = 1, linetype = 2, linewidth = 2) +
-        geom_point(aes(shape = baseline_type, color = baseline_type, fill = baseline_type), size = 3) +
-        geom_text(data = note_df, aes(x = x, y = y, label = text), size = 9, parse = T) +
+    p = ggplot(data = dat_long, aes(x = baseline, y = cf_c_loss))
+    if(add_label) {
+        p = p +
+            geom_text(aes(label = code), hjust = -0.5, size = 5, parse = T)
+    }
+    p = p +
+        geom_segment(data = summ_ci_x, aes(x = x0, xend = x1, y = y, color = baseline_type), linewidth = 1.2) +
+        geom_segment(data = summ_ci_y, aes(x = x, y = y0, yend = y1, color = baseline_type), linewidth = 1.2) +
+        geom_abline(intercept = 0, slope = 1, linetype = 2, linewidth = 1.5) +
+        geom_point(aes(shape = baseline_type, color = baseline_type, fill = baseline_type), size = 5) +
+        geom_text(data = note_df, aes(x = x, y = y, label = text), hjust = 1, vjust = 0,size = 9, parse = T) +
         scale_shape_manual(values = c(best = 16, loose = 18, lagged = 17)) +
-        scale_color_manual(values = c(best = "blue", loose = "red", lagged = "purple")) +
-        scale_fill_manual(values = c(best = "blue", loose = "red", lagged = "purple")) +
+        scale_color_manual(values = c(best = "#40B0A6", loose = "#006CD1", lagged = "#CDAC60")) +
+        scale_fill_manual(values = c(best = "#40B0A6", loose = "#006CD1", lagged = "#CDAC60")) +
         scale_x_continuous(limits = x_limit, expand = c(0.01, 0.01)) +
         scale_y_continuous(limits = y_limit, expand = c(0.01, 0.01)) +
         labs(title = fig_title,
              x = "Pre-start baseline carbon loss (MgC/ha/yr)",
              y = "Post-start counterfactual carbon loss (MgC/ha/yr)") +
         theme_bw() +
-        theme(panel.grid = element_blank(),
-              plot.title = element_text(size = size_vec[1], hjust = 0.5),
-              axis.title = element_text(size = size_vec[2]),
-              axis.text = element_text(size = size_vec[3]),
+        theme(panel.border = element_rect(color = "black", fill = NA),
+              panel.grid = element_blank(),
+              plot.title = element_blank(),
+              axis.title = element_text(size = 32),
+              axis.title.x = element_text(margin = margin(t = 30)),
+              axis.title.y = element_text(margin = margin(r = 30)),
+              axis.text = element_text(size = 28),
+              axis.text.x = element_text(margin = margin(t = 15)),
+              axis.text.y = element_text(margin = margin(r = 15)),
+              axis.ticks = element_line(linewidth = 2),
+              axis.ticks.length = unit(.5, "cm"),
               legend.position = "none")
 
     return(p)
