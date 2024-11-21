@@ -34,10 +34,9 @@ tmfemi_reformat = function(df, t0) {
 simulate_area_series = function(pts_matched,
                                 class_prefix, t0, match_years, match_classes,
                                 exp_n, area, verbose = T, lagged = F) {
-  match_assess = summary(assess_balance(pts_matched, class_prefix, t0 = t0, match_years, match_classes))
-  balance_test = all(abs(match_assess$sum.matched[, 'Std. Mean Diff.']) <= 0.2)
-
-  if(verbose){
+  if(verbose) {
+    match_assess = summary(assess_balance(pts_matched, class_prefix, t0 = t0, match_years, match_classes))
+    balance_test = all(abs(match_assess$sum.matched[, 'Std. Mean Diff.']) <= 0.2)
     print(match_assess$sum.matched)
     print(balance_test)
   }
@@ -48,7 +47,11 @@ simulate_area_series = function(pts_matched,
   # print(area)
 
   area_series = make_area_series(pts_matched %>% na.omit(), area_ha = area, class_prefix = class_prefix, lagged = lagged)
-  out = list(series = area_series, balance = match_assess$sum.matched)
+  if(verbose) {
+    out = list(series = area_series, balance = match_assess$sum.matched)
+  } else {
+    out = list(series = area_series)
+  }
   return(out)
   # }
   # else

@@ -1,130 +1,110 @@
-plotBaseline = function(dat, baseline_used, use_log10, size_vec) {
-    dat_y_mean = dat %>%
-        filter(type == "cf_c_loss") %>%
-        dplyr::select(project, y_mean = mean)
+plotBaseline = function(dat, baseline_used, note_x, note_y) {
+    summ_wide_mean = dat %>%
+        dplyr::select(type, mean, project) %>%
+        pivot_wider(names_from = "type", values_from = "mean") %>%
+        arrange(project)
 
-    dat_ci_x = dat %>%
-        filter(type == baseline_used) %>%
-        dplyr::select(project, ci_lower, ci_upper, baseline_type = type) %>%
-        left_join(dat_y_mean, by = "project")
+    summ_wide_ci_lower = dat %>%
+        dplyr::select(type, ci_lower, project) %>%
+        pivot_wider(names_from = "type", values_from = "ci_lower") %>%
+        arrange(project)
 
-    dat_x_mean = dat %>%
-        filter(type == baseline_used) %>%
-        dplyr::select(project, x_mean = mean, baseline_type = type)
+    summ_wide_ci_upper = dat %>%
+        dplyr::select(type, ci_upper, project) %>%
+        pivot_wider(names_from = "type", values_from = "ci_upper") %>%
+        arrange(project)
 
-    dat_ci_y = dat %>%
-        filter(type == "cf_c_loss") %>%
-        dplyr::select(project, ci_lower, ci_upper) %>%
-        left_join(dat_x_mean, by = "project")
+    summ_ci_x = data.frame(project = summ_wide_mean$project,
+                           baseline_type = baseline_used,
+                           y = summ_wide_mean$cf_c_loss,
+                           x0 = summ_wide_ci_lower[, baseline_used],
+                           x1 = summ_wide_ci_upper[, baseline_used])
+    colnames(summ_ci_x) = c("project", "baseline_type", "y", "x0", "x1")
 
-    dat_wide = dat %>%
-        dplyr::select(-c(ci_lower, ci_upper)) %>%
-        pivot_wider(names_from = "type", values_from = "mean", id_expand = T) %>%
+    summ_ci_y = data.frame(project = summ_wide_mean$project,
+                           baseline_type = baseline_used,
+                           x = summ_wide_mean[, baseline_used],
+                           y0 = summ_wide_ci_lower$cf_c_loss,
+                           y1 = summ_wide_ci_upper$cf_c_loss)
+    colnames(summ_ci_y) = c("project", "baseline_type", "x", "y0", "y1")
+
+    # dat_y_mean = dat %>%
+    #     filter(type == "cf_c_loss") %>%
+    #     dplyr::select(project, y_mean = mean)
+
+    # dat_ci_x = dat %>%
+    #     filter(type == baseline_used) %>%
+    #     dplyr::select(project, ci_lower, ci_upper, baseline_type = type) %>%
+    #     left_join(dat_y_mean, by = "project")
+
+    # dat_x_mean = dat %>%
+    #     filter(type == baseline_used) %>%
+    #     dplyr::select(project, x_mean = mean, baseline_type = type)
+
+    # dat_ci_y = dat %>%
+    #     filter(type == "cf_c_loss") %>%
+    #     dplyr::select(project, ci_lower, ci_upper) %>%
+    #     left_join(dat_x_mean, by = "project")
+
+    dat_wide = summ_wide_mean %>%
         mutate(c_loss_min = pmin(best, loose, lagged, na.rm = T),
                c_loss_max = pmax(best, loose, lagged, na.rm = T))
 
     dat_long = dat_wide %>%
         pivot_longer(best:lagged, names_to = "baseline_type", values_to = "baseline")
 
-    plot_partial = baseline_used %in% c("best", "loose", "lagged")
-    if(plot_partial) {
-        dat_long = subset(dat_long, baseline_type == baseline_used)
-        dat_wide = dat_wide %>%
-            mutate(text_pos = .data[[baseline_used]])
-    } else {
-        dat_wide = dat_wide %>%
-            mutate(text_pos = c_loss_min)
-    }
+    dat_long = subset(dat_long, baseline_type == baseline_used)
+    dat_wide = dat_wide %>%
+        mutate(text_pos = .data[[baseline_used]])
 
     fig_color = switch(baseline_used,
-        "all" = "black",
         "best" = "blue",
         "loose" = "red",
         "lagged" = "purple")
     fig_title = switch(baseline_used,
-        "all" = "",
         "best" = "Best-matched",
         "loose" = "Loosely-matched",
         "lagged" = "Time-lagged")
 
-    if(use_log10) {
-        dat_long = dat_long %>%
-            filter(cf_c_loss > 0 & baseline > 0) %>%
-            mutate(cf_c_loss_log10 = log10(cf_c_loss),
-                   baseline_log10 = log10(baseline))
-        lm_out = lm(cf_c_loss_log10 ~ baseline_log10, data = dat_long)
-        hjust_val = 1.3
-        if(analysis_type == "control") {
-            x_limit = c(10 ^ (-4), 10 ^ 0.4)
-            y_limit = c(10 ^ (-2.2), 10 ^ 0.4)
-        } else if(analysis_type == "ongoing") {
-            x_limit = c(10 ^ (-4), 10 ^ 0.2)
-            y_limit = c(10 ^ (-1.6), 10 ^ 0.3)
-        }
-    } else {
-        lm_out = lm(cf_c_loss ~ baseline, data = dat_long)
-        hjust_val = -0.5
-        if(analysis_type == "control") {
-            x_limit = c(-0.02, 2.36)
-            y_limit = c(-0.02, 2.36)
-        } else if(analysis_type == "ongoing") {
-            x_limit = c(-0.2, 2.55)
-            y_limit = c(-0.2, 2.55)
-        }
-    }
+    lm_out = lm(cf_c_loss ~ baseline, data = dat_long)
+    hjust_val = -0.5
+    x_limit = c(-0.2, 2.55)
+    y_limit = c(-0.2, 2.55)
+
+    # r2 = summary(lm_out)$r.squared %>% round(., 3)
+    rmse = rmse(na.omit(dat_long)$cf_c_loss, na.omit(dat_long)$baseline) %>% round(., 3)
+    mae = mae(na.omit(dat_long)$cf_c_loss, na.omit(dat_long)$baseline) %>% round(., 3)
+    # note_text1 = bquote(R^2 ~ ": " ~ .(r2))
+    note_df = tibble(
+        x = note_x,
+        y = note_y,
+        text = list(bquote("RMSE: " ~ .(rmse)),
+                    bquote("MAE: " ~ .(mae)))
+    )
+
+    size_vec = c(40, 32, 28)
 
     p = ggplot(data = dat_long, aes(x = baseline, y = cf_c_loss)) +
-        geom_segment(data = dat_wide, aes(x = c_loss_min, xend = c_loss_max, y = cf_c_loss), linetype = ifelse(plot_partial, 0, 3)) +
-        geom_segment(data = dat_ci_x, aes(x = ci_lower, xend = ci_upper, y = y_mean, color = baseline_type)) +
-        geom_segment(data = dat_ci_y, aes(x = x_mean, y = ci_lower, yend = ci_upper, color = baseline_type))
-    if(analysis_type == "control") {
-        p = p +
-            geom_point(aes(shape = Continent, color = baseline_type, fill = baseline_type), size = 3) +
-            scale_shape_manual(values = c(Asia = 1, Africa = 5, `South America` = 18)) +
-            labs(shape = "Continent")
-    } else {
-        p = p +
-            geom_point(aes(shape = baseline_type, color = baseline_type, fill = baseline_type), size = 3) +
-            geom_text(data = dat_wide, aes(x = text_pos, y = cf_c_loss, label = project),
-                    hjust = hjust_val, size = 7) +
-            scale_shape_manual(values = c(best = 16, loose = 18, lagged = 17),
-                            labels = c("Best-matched", "Loosely-matched", "Time-lagged")) +
-            labs(shape = "Baseline type")
-    }
-    p = p +
-        geom_abline(intercept = 0, slope = 1, linetype = 3) +
-        geom_abline(intercept = lm_out$coefficients[1], slope = lm_out$coefficients[2], linetype = ifelse(plot_partial, 2, 0), color = fig_color) +
-        scale_color_manual(values = c(best = "blue", loose = "red", lagged = "purple"),
-                           labels = c("Best-matched", "Loosely-matched", "Time-lagged"), guide = ifelse(plot_partial, "none", "legend")) +
-        scale_fill_manual(values = c(best = "blue", loose = "red", lagged = "purple"),
-                          labels = c("Best-matched", "Loosely-matched", "Time-lagged"), guide = ifelse(plot_partial, "none", "legend")) +
-        scale_x_continuous(limits = x_limit, expand = c(0.01, 0.01),
-                           transform = ifelse(use_log10, "log10", "identity"),
-                           breaks = if (use_log10) trans_breaks("log10", function(x) 10 ^ x) else waiver(),
-                           labels = if (use_log10) trans_format("log10", math_format(10 ^ .x)) else waiver()) +
-        scale_y_continuous(limits = y_limit, expand = c(0.01, 0.01),
-                           transform = ifelse(use_log10, "log10", "identity"),
-                           breaks = if (use_log10) trans_breaks("log10", function(x) 10 ^ x) else waiver(),
-                           labels = if (use_log10) trans_format("log10", math_format(10 ^ .x)) else waiver()) +
+#        geom_text(aes(label = project), hjust = -0.1, size = 5, parse = T) +
+        geom_segment(data = summ_ci_x, aes(x = x0, xend = x1, y = y, color = baseline_type)) +
+        geom_segment(data = summ_ci_y, aes(x = x, y = y0, yend = y1, color = baseline_type)) +
+        geom_abline(intercept = 0, slope = 1, linetype = 2, linewidth = 2) +
+        geom_point(aes(shape = baseline_type, color = baseline_type, fill = baseline_type), size = 3) +
+        geom_text(data = note_df, aes(x = x, y = y, label = text), size = 9, parse = T) +
+        scale_shape_manual(values = c(best = 16, loose = 18, lagged = 17)) +
+        scale_color_manual(values = c(best = "blue", loose = "red", lagged = "purple")) +
+        scale_fill_manual(values = c(best = "blue", loose = "red", lagged = "purple")) +
+        scale_x_continuous(limits = x_limit, expand = c(0.01, 0.01)) +
+        scale_y_continuous(limits = y_limit, expand = c(0.01, 0.01)) +
         labs(title = fig_title,
-             x = "Baseline carbon loss (MgC/ha/yr)",
-             y = "Observed counterfactual carbon loss (MgC/ha/yr)",
-             color = "Baseline type",
-             fill = "Baseline type") +
+             x = "Pre-start baseline carbon loss (MgC/ha/yr)",
+             y = "Post-start counterfactual carbon loss (MgC/ha/yr)") +
         theme_bw() +
         theme(panel.grid = element_blank(),
-              legend.position = "bottom",
-              legend.box = "vertical",
+              plot.title = element_text(size = size_vec[1], hjust = 0.5),
               axis.title = element_text(size = size_vec[2]),
               axis.text = element_text(size = size_vec[3]),
-              legend.title = element_text(size = size_vec[2]),
-              legend.text = element_text(size = size_vec[3]),
-              plot.title = element_text(size = size_vec[1], hjust = 0.5))
-
-    if(plot_partial & analysis_type == "ongoing") {
-        p = p +
-            theme(legend.position = "none")
-    }
+              legend.position = "none")
 
     return(p)
 }
