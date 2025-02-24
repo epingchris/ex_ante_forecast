@@ -29,37 +29,46 @@ plotPlacebo = function(dat, period_used) {
                            y0 = summ_wide_ci_lower$cf_c_loss,
                            y1 = summ_wide_ci_upper$cf_c_loss)
 
-    lm_control = lm(p_c_loss ~ cf_c_loss, data = summ_wide_mean)
+    lm_control = lm(cf_c_loss ~ p_c_loss, data = summ_wide_mean)
+    slope = summary(lm_control)$coefficients[2, 1] %>% round(., 2)
+    slope_se = summary(lm_control)$coefficients[2, 2]
+    slope_df = summary(lm_control)$df[2]
+    slope_t = qt(0.975, slope_df)
+    slope_ci = c(slope - slope_se * slope_t, slope + slope_se * slope_t) %>% round(., 2)
+
     r2 = summary(lm_control)$r.squared %>% round(., 3)
     rmse = rmse(na.omit(summ_wide_mean)$p_c_loss, na.omit(summ_wide_mean)$cf_c_loss) %>% round(., 3)
     mae = mae(na.omit(summ_wide_mean)$p_c_loss, na.omit(summ_wide_mean)$cf_c_loss) %>% round(., 3)
     note_df = tibble(
         x = 2.5,
-        y = c(0.4, 0.2, 0.0),
-        text = list(bquote(R^2 ~ ": " ~ .(r2)),
-                    bquote("RMSE: " ~ .(rmse)),
-                    bquote("MAE: " ~ .(mae)))
+        y = c(0.2, 0.0),
+        #y = c(0.4, 0.2, 0.0),
+        text = list(bquote(R^2 * ": " * .(r2)),
+                    bquote("Slope: " * .(slope) * " [" * .(slope_ci[1]) * ", " * .(slope_ci[2]) * "]"))
+        # text = list(bquote(R^2 ~ ": " ~ .(r2)),
+        #             bquote("RMSE: " ~ .(rmse)),
+        #             bquote("MAE: " ~ .(mae)))
     )
 
-    title_text = ifelse(period_used == "pre", "a. Pre-start period", "b. Post-start period")
+    title_text = ifelse(period_used == "pre", "A. Pre-implementation period", "B. Implementation period")
 
     p = ggplot(data = summ_wide_mean, aes(x = p_c_loss, y = cf_c_loss)) +
-        geom_point(aes(shape = Continent, color = Continent, fill = Continent), size = 6) +
-        geom_segment(data = summ_ci_x, aes(x = x0, xend = x1, y = y, color = Continent), linewidth = 1.2) +
-        geom_segment(data = summ_ci_y, aes(x = x, y = y0, yend = y1, color = Continent), linewidth = 1.2) +
+        geom_point(size = 6) +
+        geom_segment(data = summ_ci_x, aes(x = x0, xend = x1, y = y,), linewidth = 1.2) +
+        geom_segment(data = summ_ci_y, aes(x = x, y = y0, yend = y1), linewidth = 1.2) +
         geom_text(data = note_df, aes(x = x, y = y, label = text), hjust = 1, vjust = 0, size = 15, parse = T) +
         geom_abline(intercept = 0, slope = 1, linetype = 3) +
-        scale_shape_manual(values = c(Asia = 16, Africa = 17, `South America` = 18)) +
-        scale_color_manual(values = c(Asia = "#006CD1", Africa = "#40B0A6", `South America` = "#CDAC60")) +
-        scale_fill_manual(values = c(Asia = "#006CD1", Africa = "#40B0A6", `South America` = "#CDAC60")) +
+        # scale_shape_manual(values = c(Asia = 16, Africa = 17, `South America` = 18)) +
+        # scale_color_manual(values = c(Asia = "#006CD1", Africa = "#40B0A6", `South America` = "#CDAC60")) +
+        # scale_fill_manual(values = c(Asia = "#006CD1", Africa = "#40B0A6", `South America` = "#CDAC60")) +
         scale_x_continuous(limits = c(-0.2, 2.6), expand = c(0, 0)) + #ensures no padding
         scale_y_continuous(limits = c(-0.2, 2.6), expand = c(0, 0)) +
         labs(title = title_text,
-             x = "Placebo carbon loss (MgC/ha/yr)",
-             y = "Counterfactual carbon loss (MgC/ha/yr)",
-             color = "Continent  ",
-             fill = "Continent  ",
-             shape = "Continent  ") +
+             x = bquote("Placebo carbon loss (MgC" ~ ha^"-1" ~ yr^"-1" * ")"),
+             y = bquote("Baseline carbon loss (MgC" ~ ha^"-1" ~ yr^"-1" * ")")) +
+            #  color = "Continent  ",
+            #  fill = "Continent  ",
+            #  shape = "Continent  ") +
         theme_bw() +
         theme(panel.border = element_rect(color = "black", fill = NA),
               panel.grid = element_blank(),
