@@ -226,7 +226,8 @@ acd_df = acd_list %>%
       pivot_wider(names_from = land.use.class, values_from = carbon.density, names_prefix = "class_")
   }) %>%
   list_rbind() %>%
-  relocate(project, sort(tidyselect::peek_vars()))
+  relocate(project, sort(tidyselect::peek_vars())) %>% #sort columns by land class
+  arrange(as.numeric(project)) #sort rows by project ID
 write.csv(acd_df, paste0(out_path, "_carbon_density_per_project.csv"), row.names = F)
 #project_var = read.csv(paste0(out_path, "_project_var.csv"), header = T)
 
