@@ -1,4 +1,4 @@
-  AdditionalityPair = function(pair_dir, t0, area_ha, acd, k, matches, offset) {
+  AdditionalityPair = function(pair_dir, t0, area_ha, acd, k, matches, lagged) {
     #find paths to match and unmatached points in each sampled pairs
     pair_paths = FindFiles(pair_dir, ".parquet", full = T)
     matched_paths = pair_paths %>% str_subset("matchless", negate = T)
@@ -36,8 +36,8 @@
                 mutate(treatment = "treatment") %>%
                 tmfemi_reformat(t0 = t0)
 
-        # For when offset = T: remove columns "JRC2021" "JRC2022" which contain only NA's
-        if(offset) {
+        # For when lagged = T: remove columns "JRC2021" "JRC2022" which contain only NA's
+        if(lagged) {
             control = control[!str_detect(colnames(control), "JRC[:digit:]{4}$|JRC[1-9]$|JRC1[0-9]$")]
             treat = treat[!str_detect(colnames(treat), "JRC[:digit:]{4}$|JRC[1-9]$|JRC1[0-9]$")]
         }
@@ -55,7 +55,7 @@
         match_classes = c(1, 3)
         luc_series = simulate_area_series(pts_matched, class_prefix = class_prefix, t0 = t0,
                                           match_years = match_years, match_classes = match_classes,
-                                          exp_n = exp_n_pairs, area = area_ha, verbose = F, offset = offset)
+                                          exp_n = exp_n_pairs, area = area_ha, verbose = F, lagged = lagged)
 
         #calculate annual carbon stock (MgC)
         carbon_series = luc_series$series %>%
