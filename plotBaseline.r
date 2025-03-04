@@ -1,4 +1,4 @@
-plotBaseline = function(dat, baseline_used, metrics, corr = F, add_label = F) {
+plotBaseline = function(dat, baseline_used, stat) {
     summ_wide_mean = dat %>%
         dplyr::select(type, mean, project) %>%
         pivot_wider(names_from = "type", values_from = "mean") %>%
@@ -29,7 +29,7 @@ plotBaseline = function(dat, baseline_used, metrics, corr = F, add_label = F) {
     colnames(summ_ci_y) = c("project", "baseline_type", "x", "y0", "y1")
 
     dat_wide = dat %>%
-        dplyr::select(type, mean, project, code) %>%
+        dplyr::select(type, mean, project) %>%
         pivot_wider(names_from = "type", values_from = "mean") %>%
         mutate(c_loss_min = pmin(best, loose, lagged, na.rm = T),
                c_loss_max = pmax(best, loose, lagged, na.rm = T))
@@ -47,28 +47,13 @@ plotBaseline = function(dat, baseline_used, metrics, corr = F, add_label = F) {
     y_limit = c(-0.2, 2.55)
 
 
-    if(corr) {
-        note = tibble(
-            x = 2.5,
-            y = c(0, -0.2),
-            text = list(bquote("MAE: " * .(metrics[1])),
-                        bquote("Correction factor: " * .(metrics[2]) * " [" * .(metrics[3]) * ", " * .(metrics[4]) * "]")
-            )
+    note = tibble(
+        x = 2.5,
+        y = c(0, -0.2),
+        text = stat
         )
-    } else {
-        note = tibble(
-            x = 2.5,
-            y = c(0, -0.2),
-            text = list(bquote("MAE: " * .(metrics[1])), NULL)
-        )
-    }
 
-    p = ggplot(data = dat_long, aes(x = baseline, y = cf_c_loss))
-    if(add_label) {
-        p = p +
-            geom_text(aes(label = code), hjust = -0.5, size = 5, parse = T)
-    }
-    p = p +
+    p = ggplot(data = dat_long, aes(x = baseline, y = cf_c_loss)) +
         geom_segment(data = summ_ci_x, aes(x = x0, xend = x1, y = y, color = baseline_type), linewidth = 1.2) +
         geom_segment(data = summ_ci_y, aes(x = x, y = y0, yend = y1, color = baseline_type), linewidth = 1.2) +
         geom_abline(aes(intercept = 0, slope = lm_slope, color = baseline_type), linetype = 1, linewidth = 0) +

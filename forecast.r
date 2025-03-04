@@ -9,13 +9,13 @@ rm(list = ls())
 library(tidyverse) #ggplot2, dplyr, stringr, plotPlacebo/plotBaseline.r: tibble to store labels with bquote()
 library(magrittr) #pipe operators
 library(units) #units::set_units
-library(sf) #sf::st_area
+library(sf) #sf::st_area; runs on GDAL 3.10
 library(arrow) #arrow::read_parquet
 library(MatchIt) #MatchIt::matchit
 library(boot) #boot::boot
 library(scales) #scales::trans_break
 library(Metrics) #CalcError.r: rmse, mae
-#library(patchwork)
+library(patchwork)
 #library(pryr) #pryr::object_size
 #library(parallel) #parallel::mclapply
 
@@ -86,8 +86,8 @@ BootOut = function(type, in_df, boot_n = 1000) {
 # A. Read input (E-Ping's workflow) ----
 
 #Define analysis type
-analysis_type = "ongoing"
-#"control": non-project polygons
+analysis_type = "control"
+#"control": placebo "projects"
 #"ongoing": ongoing REDD+ projects (best-matched and loosely-matched baselines)
 #"ac": Amazonian Collective polygons
 ofir = F
@@ -174,7 +174,6 @@ for(i in seq_along(projects)) {
 polygon_paths = paste0(polygon_dir, projects, ".geojson")
 proj_ID = gsub("(?<=[0-9])a$", "", projects, perl = T)
 project_var = proj_info[match(proj_ID, proj_info$ID), ]
-country = project_var$COUNTRY
 t0_vec = project_var$t0
 
 #vector containing area (ha) of every project
@@ -223,11 +222,19 @@ acd_df = acd_list %>%
   imap(function(.x, .y) {
     .x %>%
       mutate(project = .y) %>%
+      filter(land.use.class != 0) %>% #land use class 0 doesn't mean anything
       pivot_wider(names_from = land.use.class, values_from = carbon.density, names_prefix = "class_")
   }) %>%
   list_rbind() %>%
-  relocate(project, sort(tidyselect::peek_vars())) %>% #sort columns by land class
-  arrange(as.numeric(project)) #sort rows by project ID
+  relocate(project, sort(tidyselect::peek_vars())) #sort columns by land class
+
+if(analysis_type == "ongoing") {
+  acd_df = acd_df %>%
+    arrange(as.numeric(project)) #sort rows by project ID
+} else {
+  acd_df = acd_df %>%
+    arrange(project) #sort rows by project ID
+}
 write.csv(acd_df, paste0(out_path, "_carbon_density_per_project.csv"), row.names = F)
 #project_var = read.csv(paste0(out_path, "_project_var.csv"), header = T)
 
@@ -242,7 +249,6 @@ write.csv(acd_df, paste0(out_path, "_carbon_density_per_project.csv"), row.names
 #k_paths_lagged = NULL
 #m_paths_lagged = NULL
 #polygon_paths = NULL
-#country = NULL
 #t0_vec = NULL
 #area_ha_vec = NULL
 #acd_list = NULL
@@ -447,40 +453,86 @@ write.table(baseline_lagged_boot_df, paste0(out_path, "_baseline_lagged_boot.csv
 
 # D. Generate results ----
 
-# Figure 3. show that there is no bias in our counterfactuals using placebo areas
 if(analysis_type == "control") {
-  continent_name = c(as = "Asia", af = "Africa", sa = "South America")
-  pre_cf_c_loss_boot_df = read.csv(paste0(out_path, "_pre_cf_c_loss.csv"), header = T)
-  pre_p_c_loss_boot_df = read.csv(paste0(out_path, "_pre_p_c_loss.csv"), header = T)
-  post_cf_c_loss_boot_df = read.csv(paste0(out_path, "_post_cf_c_loss.csv"), header = T)
+  # pre_cf_c_loss_boot_df = read.csv(paste0(out_path, "_pre_cf_c_loss.csv"), header = T)
+  # pre_p_c_loss_boot_df = read.csv(paste0(out_path, "_pre_p_c_loss.csv"), header = T)
   post_p_c_loss_boot_df = read.csv(paste0(out_path, "_post_p_c_loss.csv"), header = T)
+  post_cf_c_loss_boot_df = read.csv(paste0(out_path, "_post_cf_c_loss.csv"), header = T)
+  baseline_best_boot_df = read.csv(paste0(out_path, "_baseline_best_boot.csv"), header = T)
+  baseline_loose_boot_df = read.csv(paste0(out_path, "_baseline_loose_boot.csv"), header = T)
+  baseline_lagged_boot_df = read.csv(paste0(out_path, "_baseline_lagged_boot.csv"), header = T)
 
-  summ = list_rbind(list(pre_cf_c_loss_boot_df %>% mutate(period = "pre"),
-                         pre_p_c_loss_boot_df %>% mutate(period = "pre"),
-                         post_cf_c_loss_boot_df %>% mutate(period = "post"),
-                         post_p_c_loss_boot_df %>% mutate(period = "post"))) %>%
-    mutate(Continent = continent_name[str_sub(project, 1, 2)])
+# Figure 3. ex post estimation with placebo areas
+  # summ = list_rbind(list(pre_cf_c_loss_boot_df %>% mutate(period = "pre"),
+  #                        pre_p_c_loss_boot_df %>% mutate(period = "pre"),
+  #                        post_cf_c_loss_boot_df %>% mutate(period = "post"),
+  #                        post_p_c_loss_boot_df %>% mutate(period = "post")))
 
-  p1 = plotPlacebo(dat = summ, period_used = "pre")
-  p2 = plotPlacebo(dat = summ, period_used = "post")
-  (p1 + p2) +
-    plot_layout(guides = "collect", axis_titles = "collect") &
-    theme(legend.position = "bottom")
-  ggsave(paste0(fig_path, "figure3_placebo_all.png"), width = 8000, height = 4400, units = "px")
+  # p_pre = plotPlacebo(dat = summ %>% filter(period == "pre"))$p
+  p_post = plotPlacebo(dat = summ %>% filter(period == "post"))$p
 
-  #linear regressions to obtain slope estimates
-  summ_wide_mean = summ %>%
-    filter(period == "post") %>%
-    dplyr::select(type, mean, project, Continent) %>%
-    pivot_wider(names_from = "type", values_from = "mean")
+  # # Create column labels
+  # col_pre = ggplot() + ggtitle("A. Pre-implementation period") + theme_void() + theme(plot.title = element_text(size = 40, hjust = 0.5))
+  # col_post = ggplot() + ggtitle("B. Implementation period") + theme_void() + theme(plot.title = element_text(size = 40, hjust = 0.5))
 
-  lm_control_as = lm(p_c_loss ~ cf_c_loss, data = subset(summ_wide_mean, Continent == "Asia"))
-  lm_control_af = lm(p_c_loss ~ cf_c_loss, data = subset(summ_wide_mean, Continent == "Africa"))
-  lm_control_sa = lm(p_c_loss ~ cf_c_loss, data = subset(summ_wide_mean, Continent == "South America"))
-  summary(lm_control)
-  confint(lm_control_as)
-  confint(lm_control_af)
-  confint(lm_control_sa)
+  # plots = (p_pre + p_post) +
+  #   plot_layout(guides = "collect", axes = "collect", axis_titles = "collect") &
+  #   theme(legend.position = "bottom")
+  # cols = (col_pre + col_post) +
+  #   plot_layout(nrow = 1, widths = c(1, 1))
+  # plot_complete =
+  #   cols / plots +
+  #   plot_layout(nrow = 2, heights = c(0.01, 1))
+  # ggsave(paste0(fig_path, "figure3_placebo_pre_vs_post.png"), width = 8000, height = 4400, units = "px")
+
+
+# Figure 4. ex ante forecasts with placebo areas
+  summ_ex_ante = list_rbind(list(post_cf_c_loss_boot_df,
+                                 baseline_best_boot_df,
+                                 baseline_loose_boot_df,
+                                 baseline_lagged_boot_df))
+
+  # summ_wide = summ_ex_ante %>%
+  #   dplyr::select(type, mean, project) %>%
+  #   pivot_wider(names_from = "type", values_from = "mean", id_expand = T)
+  # lm_best = lm(cf_c_loss ~ best - 1, data = summ_wide)
+  # lm_loose = lm(cf_c_loss ~ loose - 1, data = summ_wide)
+  # lm_lagged = lm(cf_c_loss ~ lagged - 1, data = summ_wide)
+
+  # #calculate R2
+  # r2 = c(summary(lm_best)$r.squared, summary(lm_loose)$r.squared, summary(lm_lagged)$r.squared) %>% round(., 3)
+
+  # #calculate MAE
+  # mae_val = c(mean(abs(summ_wide$cf_c_loss - summ_wide$best)),
+  #             mean(abs(summ_wide$cf_c_loss - summ_wide$loose)),
+  #             mean(abs(summ_wide$cf_c_loss - summ_wide$lagged), na.rm = T)) %>% round(., 2)
+
+  p_regional = plotPlacebo(dat = summ_ex_ante %>% filter(type %in% c("cf_c_loss", "loose")), col = "#006CD1")$p
+  p_historical = plotPlacebo(dat = summ_ex_ante %>% filter(type %in% c("cf_c_loss", "best")), col = "#40B0A6")$p
+  p_lagged = plotPlacebo(dat = summ_ex_ante %>% filter(type %in% c("cf_c_loss", "lagged")), col = "#CDAC60")$p
+
+  # Create column labels
+  col_post = ggplot() +
+    ggtitle(bquote(italic("Ex post") ~ " counterfactual")) +
+    theme_void() + theme(plot.title = element_text(size = 40, hjust = 0.5))
+  col_regional = ggplot() +
+    ggtitle(bquote(atop(italic("Ex ante") ~ "forecasts", "using regionally matched pixels"))) +
+    theme_void() + theme(plot.title = element_text(size = 40, hjust = 0.5))
+  col_historical = ggplot() +
+    ggtitle(bquote(atop(italic("Ex ante") ~ "forecasts", "using historic placebo carbon loss"))) +
+    theme_void() + theme(plot.title = element_text(size = 40, hjust = 0.5))
+  col_lagged = ggplot() +
+    ggtitle(bquote(atop(italic("Ex ante") ~ "forecasts", "using time-lagged matching pixels"))) +
+    theme_void() + theme(plot.title = element_text(size = 40, hjust = 0.5))
+
+  plots = (p_post + p_regional + p_historical + p_lagged) +
+    plot_layout(nrow = 1, guides = "collect", axis_titles = "collect")
+  cols = (col_post + col_regional + col_historical + col_lagged) +
+    plot_layout(nrow = 1)
+  plot_complete =
+    cols / plots +
+    plot_layout(nrow = 2, heights = c(0.01, 1))
+  ggsave(paste0(fig_path, "figure4_placebo_all_4.png"), width = 48, height = 12, units = "in")
 }
 
 
@@ -494,7 +546,7 @@ if(analysis_type == "ongoing") {
                          baseline_best_boot_df,
                          baseline_loose_boot_df,
                          baseline_lagged_boot_df)) %>%
-    left_join(project_var[c("ID", "code")], by = join_by(project == ID))
+    left_join(project_var["ID"], by = join_by(project == ID))
 
   #fit LM while forcing through the origin (0, 0)
   summ_wide = summ %>%
@@ -519,14 +571,14 @@ if(analysis_type == "ongoing") {
   corr_confint = data.frame(best = as.numeric(confint(lm_best)),
                             loose = as.numeric(confint(lm_loose)),
                             lagged = as.numeric(confint(lm_lagged))) %>% round(., 2)
-  write.csv(data.frame(type = c("best", "loose", "lagged"), val = corr_fact), paste0(out_path, "_corr_fact.csv"))
+  write.csv(data.frame(type = c("best", "loose", "lagged"), correction_factor = corr_fact), paste0(out_path, "_corr_fact.csv"))
 
   summ_corr = list_rbind(list(post_cf_c_loss_boot_df,
                               baseline_best_boot_df %>% mutate(across(mean:ci_upper, function(x) x * corr_fact[1])),
                               baseline_loose_boot_df %>% mutate(across(mean:ci_upper, function(x) x * corr_fact[2])),
                               baseline_lagged_boot_df %>% mutate(across(mean:ci_upper, function(x) x * corr_fact[3]))))
   summ_corr = summ_corr %>%
-    left_join(project_var[c("ID", "code")], by = join_by(project == ID))
+    left_join(project_var[c("ID")], by = join_by(project == ID))
 
   #fit LM while forcing through the origin (0, 0)
   summ_corr_wide = summ_corr %>%
@@ -545,9 +597,9 @@ if(analysis_type == "ongoing") {
   p1 = plotBaseline(dat = summ, baseline_used = "best", metrics = mae_val[1])
   p2 = plotBaseline(dat = summ, baseline_used = "loose", metrics = mae_val[2])
   p3 = plotBaseline(dat = summ, baseline_used = "lagged", metrics = mae_val[3])
-  p4 = plotBaseline(dat = summ_adj, baseline_used = "best", metrics = c(mae_corr[1], corr_fact[1], corr_confint$best), corr = T)
-  p5 = plotBaseline(dat = summ_adj, baseline_used = "loose", metrics = c(mae_corr[2], corr_fact[2], corr_confint$loose), corr = T)
-  p6 = plotBaseline(dat = summ_adj, baseline_used = "lagged", metrics = c(mae_corr[3], corr_fact[3], corr_confint$lagged), corr = T)
+  p4 = plotBaseline(dat = summ_corr, baseline_used = "best", metrics = c(mae_corr[1], corr_fact[1], corr_confint$best), corr = T)
+  p5 = plotBaseline(dat = summ_corr, baseline_used = "loose", metrics = c(mae_corr[2], corr_fact[2], corr_confint$loose), corr = T)
+  p6 = plotBaseline(dat = summ_corr, baseline_used = "lagged", metrics = c(mae_corr[3], corr_fact[3], corr_confint$lagged), corr = T)
   # Create column labels
   col1 = ggplot() + ggtitle("A. Close matching") + theme_void() + theme(plot.title = element_text(size = 40, hjust = 0.5))
   col2 = ggplot() + ggtitle("B. Loose matching") + theme_void() + theme(plot.title = element_text(size = 40, hjust = 0.5))
@@ -573,6 +625,7 @@ if(analysis_type == "ongoing") {
   plot_complete = #then column
     cols / r2_lab / plots +
     plot_layout(nrow = 3, heights = c(0.01, 0.05, 1))
+  ggsave(paste0(fig_path, "figure3c_control.png"), width = 7500, height = 5500, units = "px")
   ggsave(paste0(fig_path, "figure4_ongoing.png"), width = 7500, height = 5500, units = "px")
 
 
@@ -611,7 +664,7 @@ if(analysis_type == "ongoing") {
   write.table(eff_df, paste0(out_path, "_effectiveness.csv"), sep = ",", row.names = F)
 
   eff_df = read.csv(paste0(out_path, "_effectiveness.csv"), header = T) %>%
-    left_join(project_var[c("ID", "code")], by = join_by(project == ID))
+    left_join(project_var[c("ID")], by = join_by(project == ID))
 
   eff_plot = eff_df %>%
     filter(eff > 0) %>%

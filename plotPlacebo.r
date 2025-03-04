@@ -1,74 +1,58 @@
-plotPlacebo = function(dat, period_used) {
-    dat_used = dat %>%
-        filter(period == period_used)
+plotPlacebo = function(dat, col = "black") {
+    dat = dat %>%
+        mutate(type = replace(type, type != "cf_c_loss", "estimate")) %>%
+        mutate(type = recode(type, "cf_c_loss" = "measure"))
 
-    summ_wide_mean = dat_used %>%
-        dplyr::select(type, mean, project, Continent) %>%
+    summ_wide_mean = dat %>%
+        dplyr::select(type, mean, project) %>%
         pivot_wider(names_from = "type", values_from = "mean") %>%
         arrange(project)
 
-    summ_wide_ci_lower = dat_used %>%
-        dplyr::select(type, ci_lower, project, Continent) %>%
+    summ_wide_ci_lower = dat %>%
+        dplyr::select(type, ci_lower, project) %>%
         pivot_wider(names_from = "type", values_from = "ci_lower") %>%
         arrange(project)
 
-    summ_wide_ci_upper = dat_used %>%
-        dplyr::select(type, ci_upper, project, Continent) %>%
+    summ_wide_ci_upper = dat %>%
+        dplyr::select(type, ci_upper, project) %>%
         pivot_wider(names_from = "type", values_from = "ci_upper") %>%
         arrange(project)
 
     summ_ci_x = data.frame(project = summ_wide_mean$project,
-                           Continent = summ_wide_mean$Continent,
-                           y = summ_wide_mean$cf_c_loss,
-                           x0 = summ_wide_ci_lower$p_c_loss,
-                           x1 = summ_wide_ci_upper$p_c_loss)
+                           y = summ_wide_mean$estimate,
+                           x0 = summ_wide_ci_lower$measure,
+                           x1 = summ_wide_ci_upper$measure)
 
     summ_ci_y = data.frame(project = summ_wide_mean$project,
-                           Continent = summ_wide_mean$Continent,
-                           x = summ_wide_mean$p_c_loss,
-                           y0 = summ_wide_ci_lower$cf_c_loss,
-                           y1 = summ_wide_ci_upper$cf_c_loss)
+                           x = summ_wide_mean$measure,
+                           y0 = summ_wide_ci_lower$estimate,
+                           y1 = summ_wide_ci_upper$estimate)
 
-    lm_control = lm(cf_c_loss ~ p_c_loss, data = summ_wide_mean)
-    slope = summary(lm_control)$coefficients[2, 1] %>% round(., 2)
-    slope_se = summary(lm_control)$coefficients[2, 2]
-    slope_df = summary(lm_control)$df[2]
+    lm_out = lm(estimate ~ measure - 1, data = summ_wide_mean)
+    slope = summary(lm_out)$coefficients[1, 1] %>% round(., 2)
+    slope_se = summary(lm_out)$coefficients[1, 2]
+    slope_df = summary(lm_out)$df[2]
     slope_t = qt(0.975, slope_df)
     slope_ci = c(slope - slope_se * slope_t, slope + slope_se * slope_t) %>% round(., 2)
 
-    r2 = summary(lm_control)$r.squared %>% round(., 3)
-    rmse = rmse(na.omit(summ_wide_mean)$p_c_loss, na.omit(summ_wide_mean)$cf_c_loss) %>% round(., 3)
-    mae = mae(na.omit(summ_wide_mean)$p_c_loss, na.omit(summ_wide_mean)$cf_c_loss) %>% round(., 3)
+    r2 = summary(lm_out)$r.squared %>% round(., 3)
     note_df = tibble(
-        x = 2.5,
-        y = c(0.2, 0.0),
-        #y = c(0.4, 0.2, 0.0),
-        text = list(bquote(R^2 * ": " * .(r2)),
-                    bquote("Slope: " * .(slope) * " [" * .(slope_ci[1]) * ", " * .(slope_ci[2]) * "]"))
-        # text = list(bquote(R^2 ~ ": " ~ .(r2)),
-        #             bquote("RMSE: " ~ .(rmse)),
-        #             bquote("MAE: " ~ .(mae)))
+        x = 0,
+        y = c(2.4, 2.2),
+        text = list(bquote("Slope: " * .(slope) * " [" * .(slope_ci[1]) * ", " * .(slope_ci[2]) * "]"),
+                    bquote(R^2 * ": " * .(r2)))
     )
 
-    title_text = ifelse(period_used == "pre", "A. Pre-implementation period", "B. Implementation period")
-
-    p = ggplot(data = summ_wide_mean, aes(x = p_c_loss, y = cf_c_loss)) +
-        geom_point(size = 6) +
-        geom_segment(data = summ_ci_x, aes(x = x0, xend = x1, y = y,), linewidth = 1.2) +
-        geom_segment(data = summ_ci_y, aes(x = x, y = y0, yend = y1), linewidth = 1.2) +
-        geom_text(data = note_df, aes(x = x, y = y, label = text), hjust = 1, vjust = 0, size = 15, parse = T) +
+    p = ggplot(data = summ_wide_mean, aes(x = measure, y = estimate)) +
+        geom_point(size = 6, color = col) +
+        geom_segment(data = summ_ci_x, aes(x = x0, xend = x1, y = y), color = col, linewidth = 1.2) +
+        geom_segment(data = summ_ci_y, aes(x = x, y = y0, yend = y1), color = col, linewidth = 1.2) +
+        geom_text(data = note_df, aes(x = x, y = y, label = text), hjust = 0, size = 15, parse = T) +
         geom_abline(intercept = 0, slope = 1, linetype = 3) +
-        # scale_shape_manual(values = c(Asia = 16, Africa = 17, `South America` = 18)) +
-        # scale_color_manual(values = c(Asia = "#006CD1", Africa = "#40B0A6", `South America` = "#CDAC60")) +
-        # scale_fill_manual(values = c(Asia = "#006CD1", Africa = "#40B0A6", `South America` = "#CDAC60")) +
         scale_x_continuous(limits = c(-0.2, 2.6), expand = c(0, 0)) + #ensures no padding
         scale_y_continuous(limits = c(-0.2, 2.6), expand = c(0, 0)) +
-        labs(title = title_text,
-             x = bquote("Placebo carbon loss (MgC" ~ ha^"-1" ~ yr^"-1" * ")"),
-             y = bquote("Baseline carbon loss (MgC" ~ ha^"-1" ~ yr^"-1" * ")")) +
-            #  color = "Continent  ",
-            #  fill = "Continent  ",
-            #  shape = "Continent  ") +
+        labs(x = bquote("Observed carbon loss (MgC" ~ ha^"-1" ~ yr^"-1" * ")"),
+             y = bquote("Estimated carbon loss (MgC" ~ ha^"-1" ~ yr^"-1" * ")")) +
         theme_bw() +
         theme(panel.border = element_rect(color = "black", fill = NA),
               panel.grid = element_blank(),
@@ -85,5 +69,5 @@ plotPlacebo = function(dat, period_used) {
               legend.title = element_text(size = 32, margin = margin(t = 10)),
               legend.text = element_text(size = 32, margin = margin(t = 10)))
 
-    return(p)
+    return(list(p = p, lm = lm_out))
 }
