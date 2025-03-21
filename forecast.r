@@ -255,6 +255,8 @@ write.csv(acd_df, paste0(out_path, "_carbon_density_per_project.csv"), row.names
 #out_path = NULL
 #fig_path = NULL
 
+pairs_lagged_list = vector("list", length(projects))
+
 # B. Get additionality and baseline ----
 for(i in seq_along(projects)) {
 
@@ -279,41 +281,41 @@ for(i in seq_along(projects)) {
     matches = setM %>%
       dplyr::select(lat, lng, s_ecoregion)
 
-    a = Sys.time()
-    pairs_best = AdditionalityPair(pair_dir = pair_dir, t0 = t0, area_ha = area_ha, acd = acd,
-                                   k = k, matches = matches, lagged = F)
-    b = Sys.time()
-    cat("Project", i, "/", length(projects), "-", projects[i], "- pairs_best :", b - a, "\n")
+    # a = Sys.time()
+    # pairs_best = AdditionalityPair(pair_dir = pair_dir, t0 = t0, area_ha = area_ha, acd = acd,
+    #                                k = k, matches = matches, lagged = F)
+    # b = Sys.time()
+    # cat("Project", i, "/", length(projects), "-", projects[i], "- pairs_best :", b - a, "\n")
 
-    additionality = lapply(pairs_best, function(x) x$out_df) %>%
-        list_rbind() %>%
-        mutate(started = ifelse(year > t0, T, F)) %>%
-        mutate(project = projects[i])
+    # additionality = lapply(pairs_best, function(x) x$out_df) %>%
+    #     list_rbind() %>%
+    #     mutate(started = ifelse(year > t0, T, F)) %>%
+    #     mutate(project = projects[i])
 
-    baseline_best = lapply(pairs_best, function(x) {
-        filter(x$out_df, year <= t0 & year > t0 - 10) %>%
-        dplyr::select(c_loss) %>%
-        mutate(c_loss = c_loss / area_ha)
-    }) %>%
-        list_rbind() %>%
-        mutate(project = projects[i])
+    # baseline_best = lapply(pairs_best, function(x) {
+    #     filter(x$out_df, year <= t0 & year > t0 - 10) %>%
+    #     dplyr::select(c_loss) %>%
+    #     mutate(c_loss = c_loss / area_ha)
+    # }) %>%
+    #     list_rbind() %>%
+    #     mutate(project = projects[i])
 
-    write.csv(additionality, paste0(out_path, "_additionality_", projects[i], ".csv"), row.names = F)
-    write.csv(baseline_best, paste0(out_path, "_baseline_best_", projects[i], ".csv"), row.names = F)
+    # write.csv(additionality, paste0(out_path, "_additionality_", projects[i], ".csv"), row.names = F)
+    # write.csv(baseline_best, paste0(out_path, "_baseline_best_", projects[i], ".csv"), row.names = F)
 
-    setM = setM %>%
-      dplyr::select(-starts_with("luc_")) %>%
-      dplyr::select(-starts_with("cpc"))
-    if(nrow(setM) > 250000) setM = setM[sample(nrow(setM), 250000), ]
+    # setM = setM %>%
+    #   dplyr::select(-starts_with("luc_")) %>%
+    #   dplyr::select(-starts_with("cpc"))
+    # if(nrow(setM) > 250000) setM = setM[sample(nrow(setM), 250000), ]
 
-    baseline_loose = setM %>%
-        mutate(acd10 = acd$carbon.density[match(luc10, acd$land.use.class)],
-               acd0 = acd$carbon.density[match(luc0, acd$land.use.class)],
-               c_loss = (acd10 - acd0) / 10) %>%
-        dplyr::select(c_loss) %>%
-        mutate(project = projects[i])
+    # baseline_loose = setM %>%
+    #     mutate(acd10 = acd$carbon.density[match(luc10, acd$land.use.class)],
+    #            acd0 = acd$carbon.density[match(luc0, acd$land.use.class)],
+    #            c_loss = (acd10 - acd0) / 10) %>%
+    #     dplyr::select(c_loss) %>%
+    #     mutate(project = projects[i])
 
-    write.csv(baseline_loose, paste0(out_path, "_baseline_loose_", projects[i], ".csv"), row.names = F)
+    # write.csv(baseline_loose, paste0(out_path, "_baseline_loose_", projects[i], ".csv"), row.names = F)
 
     baseline_lagged = data.frame(c_loss = numeric())
     if(!(is.na(k_paths_lagged[i]) | is.na(m_paths_lagged[i]))) {
@@ -328,21 +330,22 @@ for(i in seq_along(projects)) {
           dplyr::select(lat, lng, s_ecoregion)
 
         a = Sys.time()
-        pairs_lagged = AdditionalityPair(pair_dir = pair_dir_lagged, t0 = t0, area_ha = area_ha, acd = acd,
+        pairs_lagged_list[[i]] = AdditionalityPair(pair_dir = pair_dir_lagged, t0 = t0, area_ha = area_ha, acd = acd,
                                          k = k_lagged, matches = matches_lagged, lagged = T)
         b = Sys.time()
         cat("Project", i, "/", length(projects), "-", projects[i], "- pairs_lagged :", b - a, "\n")
+}
 
+for(i in seq_along(projects)) {
+        pairs_lagged = pairs_lagged_list[[i]]
         baseline_lagged = lapply(pairs_lagged, function(x) {
-            filter(x$out_df, year <= 0 & year > -10) %>%
+            filter(x$out_df, year < 10 & year > 0) %>%
             dplyr::select(c_loss) %>%
             mutate(c_loss = c_loss / area_ha)
         }) %>%
             list_rbind() %>%
             mutate(project = projects[i])
-    }
-
-    write.csv(baseline_lagged, paste0(out_path, "_baseline_lagged_", projects[i], ".csv"), row.names = F)
+    write.csv(baseline_lagged, paste0(out_path, "_baseline_lagged_new_", projects[i], ".csv"), row.names = F)
 }
 
 
@@ -357,55 +360,55 @@ baseline_loose_boot_list = vector("list", length(projects))
 baseline_lagged_boot_list = vector("list", length(projects))
 
 for(i in seq_along(projects)) {
-  area_i = area_ha_vec[i]
-  observed = read.csv(paste0(out_path, "_additionality_", projects[i], ".csv"), header = T) %>%
-    mutate(t_loss = t_loss / area_i,
-           c_loss = c_loss / area_i,
-           additionality = additionality / area_i)
-  obs_pre = observed %>% filter(started == F)
-  obs_post = observed %>% filter(started == T)
+  # area_i = area_ha_vec[i]
+  # observed = read.csv(paste0(out_path, "_additionality_", projects[i], ".csv"), header = T) %>%
+  #   mutate(t_loss = t_loss / area_i,
+  #          c_loss = c_loss / area_i,
+  #          additionality = additionality / area_i)
+  # obs_pre = observed %>% filter(started == F)
+  # obs_post = observed %>% filter(started == T)
 
-  baseline_best = read.csv(paste0(out_path, "_baseline_best_", projects[i], ".csv"), header = T)
-  baseline_loose = read.csv(paste0(out_path, "_baseline_loose_", projects[i], ".csv"), header = T)
-  baseline_lagged = read.csv(paste0(out_path, "_baseline_lagged_", projects[i], ".csv"), header = T)
+  # baseline_best = read.csv(paste0(out_path, "_baseline_best_", projects[i], ".csv"), header = T)
+  # baseline_loose = read.csv(paste0(out_path, "_baseline_loose_", projects[i], ".csv"), header = T)
+  baseline_lagged = read.csv(paste0(out_path, "_baseline_lagged_new_", projects[i], ".csv"), header = T)
 
-  time_a = Sys.time()
-  pre_cf_c_loss_boot_list[[i]] = BootOut(type = "cf_c_loss", in_df = dplyr::select(obs_pre, c_loss))$summ %>%
-    mutate(project = projects[i])
-  time_b = Sys.time()
-  cat("Project", i, "/", length(projects), "-", projects[i], "- pre_cf_c_loss_boot :", time_b - time_a, "\n")
+  # time_a = Sys.time()
+  # pre_cf_c_loss_boot_list[[i]] = BootOut(type = "cf_c_loss", in_df = dplyr::select(obs_pre, c_loss))$summ %>%
+  #   mutate(project = projects[i])
+  # time_b = Sys.time()
+  # cat("Project", i, "/", length(projects), "-", projects[i], "- pre_cf_c_loss_boot :", time_b - time_a, "\n")
 
-  pre_p_c_loss_boot_list[[i]] = BootOut(type = "p_c_loss", in_df = dplyr::select(obs_pre, t_loss))$summ %>%
-    mutate(project = projects[i])
-  time_c = Sys.time()
-  cat("Project", i, "/", length(projects), "-", projects[i], "- pre_p_c_loss_boot :", time_c - time_b, "\n")
+  # pre_p_c_loss_boot_list[[i]] = BootOut(type = "p_c_loss", in_df = dplyr::select(obs_pre, t_loss))$summ %>%
+  #   mutate(project = projects[i])
+  # time_c = Sys.time()
+  # cat("Project", i, "/", length(projects), "-", projects[i], "- pre_p_c_loss_boot :", time_c - time_b, "\n")
 
-  post_cf_c_loss_boot_list[[i]] = BootOut(type = "cf_c_loss", in_df = dplyr::select(obs_post, c_loss))$summ %>%
-    mutate(project = projects[i])
-  time_d = Sys.time()
-  cat("Project", i, "/", length(projects), "-", projects[i], "- post_cf_c_loss_boot :", time_d - time_c, "\n")
+  # post_cf_c_loss_boot_list[[i]] = BootOut(type = "cf_c_loss", in_df = dplyr::select(obs_post, c_loss))$summ %>%
+  #   mutate(project = projects[i])
+  # time_d = Sys.time()
+  # cat("Project", i, "/", length(projects), "-", projects[i], "- post_cf_c_loss_boot :", time_d - time_c, "\n")
 
-  post_p_c_loss_boot_list[[i]] = BootOut(type = "p_c_loss", in_df = dplyr::select(obs_post, t_loss))$summ %>%
-    mutate(project = projects[i])
-  time_e = Sys.time()
-  cat("Project", i, "/", length(projects), "-", projects[i], "- post_p_c_loss_boot :", time_e - time_d, "\n")
+  # post_p_c_loss_boot_list[[i]] = BootOut(type = "p_c_loss", in_df = dplyr::select(obs_post, t_loss))$summ %>%
+  #   mutate(project = projects[i])
+  # time_e = Sys.time()
+  # cat("Project", i, "/", length(projects), "-", projects[i], "- post_p_c_loss_boot :", time_e - time_d, "\n")
 
-  observed_add_boot_out = BootOut(type = "additionality", in_df = dplyr::select(obs_post, additionality))
-  observed_add_boot_list[[i]] = observed_add_boot_out$summ %>%
-    mutate(project = projects[i])
-  time_f = Sys.time()
-  cat("Project", i, "/", length(projects), "-", projects[i], "- add_boot :", time_f - time_e, "\n")
+  # observed_add_boot_out = BootOut(type = "additionality", in_df = dplyr::select(obs_post, additionality))
+  # observed_add_boot_list[[i]] = observed_add_boot_out$summ %>%
+  #   mutate(project = projects[i])
+  # time_f = Sys.time()
+  # cat("Project", i, "/", length(projects), "-", projects[i], "- add_boot :", time_f - time_e, "\n")
 
-  baseline_best_boot_out = BootOut(type = "best", in_df = dplyr::select(baseline_best, c_loss))
-  baseline_best_boot_list[[i]] = baseline_best_boot_out$summ %>%
-      mutate(project = projects[i])
-  time_g = Sys.time()
-  cat("Project", i, "/", length(projects), "-", projects[i], "- baseline_best_boot :", time_g - time_f, "\n")
+  # baseline_best_boot_out = BootOut(type = "best", in_df = dplyr::select(baseline_best, c_loss))
+  # baseline_best_boot_list[[i]] = baseline_best_boot_out$summ %>%
+  #     mutate(project = projects[i])
+  # time_g = Sys.time()
+  # cat("Project", i, "/", length(projects), "-", projects[i], "- baseline_best_boot :", time_g - time_f, "\n")
 
-  baseline_loose_boot_list[[i]] = BootOut(type = "loose", in_df = dplyr::select(baseline_loose, c_loss))$summ %>%
-      mutate(project = projects[i])
-  time_h = Sys.time()
-  cat("Project", i, "/", length(projects), "-", projects[i], "- baseline_loose_boot :", time_h - time_g, "\n")
+  # baseline_loose_boot_list[[i]] = BootOut(type = "loose", in_df = dplyr::select(baseline_loose, c_loss))$summ %>%
+  #     mutate(project = projects[i])
+   time_h = Sys.time()
+  # cat("Project", i, "/", length(projects), "-", projects[i], "- baseline_loose_boot :", time_h - time_g, "\n")
 
   if(nrow(baseline_lagged) > 0) {
     baseline_lagged_boot_list[[i]] = BootOut(type = "lagged", in_df = dplyr::select(baseline_lagged, c_loss))$summ %>%
@@ -416,11 +419,11 @@ for(i in seq_along(projects)) {
   time_i = Sys.time()
   cat("Project", i, "/", length(projects), "-", projects[i], "- baseline_lagged_boot :", time_i - time_h, "\n")
 
-  effectiveness = observed_add_boot_out$t / baseline_best_boot_out$t
-  effectiveness_list[[i]] = data.frame(project = projects[i],
-                                        eff = mean(effectiveness, na.rm = T),
-                                        eff_lower = quantile(effectiveness, probs = 0.025, na.rm = T),
-                                        eff_upper = quantile(effectiveness, probs = 0.975, na.rm = T))
+  # effectiveness = observed_add_boot_out$t / baseline_best_boot_out$t
+  # effectiveness_list[[i]] = data.frame(project = projects[i],
+  #                                       eff = mean(effectiveness, na.rm = T),
+  #                                       eff_lower = quantile(effectiveness, probs = 0.025, na.rm = T),
+  #                                       eff_upper = quantile(effectiveness, probs = 0.975, na.rm = T))
 }
 
 pre_cf_c_loss_boot_df = list_rbind(pre_cf_c_loss_boot_list)
@@ -447,100 +450,157 @@ write.table(baseline_best_boot_df, paste0(out_path, "_baseline_best_boot.csv"), 
             col.names = !file.exists(paste0(out_path, "_baseline_best_boot.csv")), row.names = F, append = append_result)
 write.table(baseline_loose_boot_df, paste0(out_path, "_baseline_loose_boot.csv"), sep = ",",
             col.names = !file.exists(paste0(out_path, "_baseline_loose_boot.csv")), row.names = F, append = append_result)
-write.table(baseline_lagged_boot_df, paste0(out_path, "_baseline_lagged_boot.csv"), sep = ",",
-            col.names = !file.exists(paste0(out_path, "_baseline_lagged_boot.csv")), row.names = F, append = append_result)
+write.table(baseline_lagged_boot_df, paste0(out_path, "_baseline_lagged_new_boot.csv"), sep = ",",
+            col.names = !file.exists(paste0(out_path, "_baseline_lagged_new_boot.csv")), row.names = F, append = append_result)
 
 
 # D. Generate results ----
 
 if(analysis_type == "control") {
-  # pre_cf_c_loss_boot_df = read.csv(paste0(out_path, "_pre_cf_c_loss.csv"), header = T)
-  # pre_p_c_loss_boot_df = read.csv(paste0(out_path, "_pre_p_c_loss.csv"), header = T)
-  post_p_c_loss_boot_df = read.csv(paste0(out_path, "_post_p_c_loss.csv"), header = T)
-  post_cf_c_loss_boot_df = read.csv(paste0(out_path, "_post_cf_c_loss.csv"), header = T)
-  baseline_best_boot_df = read.csv(paste0(out_path, "_baseline_best_boot.csv"), header = T)
-  baseline_loose_boot_df = read.csv(paste0(out_path, "_baseline_loose_boot.csv"), header = T)
-  baseline_lagged_boot_df = read.csv(paste0(out_path, "_baseline_lagged_boot.csv"), header = T)
+  closs_placebo = read.csv(paste0(out_path, "_post_p_c_loss.csv"), header = T)
+  closs_ante_regional = read.csv(paste0(out_path, "_baseline_loose_boot.csv"), header = T)
+  closs_ante_project = read.csv(paste0(out_path, "_baseline_best_boot.csv"), header = T)
+  closs_ante_historical = read.csv(paste0(out_path, "_baseline_lagged_new_boot.csv"), header = T)
+  closs_post_counterfactual = read.csv(paste0(out_path, "_post_cf_c_loss.csv"), header = T)
 
-# Figure 3. ex post estimation with placebo areas
-  # summ = list_rbind(list(pre_cf_c_loss_boot_df %>% mutate(period = "pre"),
-  #                        pre_p_c_loss_boot_df %>% mutate(period = "pre"),
-  #                        post_cf_c_loss_boot_df %>% mutate(period = "post"),
-  #                        post_p_c_loss_boot_df %>% mutate(period = "post")))
+  # Create plots
+  out_regional = plotPlacebo(dat = rbind(closs_placebo, closs_ante_regional),
+                             label_to_x = "p_c_loss", col = "#006CD1")
+  out_project = plotPlacebo(dat = rbind(closs_placebo, closs_ante_project),
+                            label_to_x = "p_c_loss", col = "#40B0A6")
+  out_historical = plotPlacebo(dat = rbind(closs_placebo, closs_ante_historical),
+                               label_to_x = "p_c_loss", col = "#CDAC60")
+  out_post = plotPlacebo(dat = rbind(closs_placebo, closs_post_counterfactual),
+                         label_to_x = "p_c_loss")
 
-  # p_pre = plotPlacebo(dat = summ %>% filter(period == "pre"))$p
-  p_post = plotPlacebo(dat = summ %>% filter(period == "post"))$p
-
-  # # Create column labels
-  # col_pre = ggplot() + ggtitle("A. Pre-implementation period") + theme_void() + theme(plot.title = element_text(size = 40, hjust = 0.5))
-  # col_post = ggplot() + ggtitle("B. Implementation period") + theme_void() + theme(plot.title = element_text(size = 40, hjust = 0.5))
-
-  # plots = (p_pre + p_post) +
-  #   plot_layout(guides = "collect", axes = "collect", axis_titles = "collect") &
-  #   theme(legend.position = "bottom")
-  # cols = (col_pre + col_post) +
-  #   plot_layout(nrow = 1, widths = c(1, 1))
-  # plot_complete =
-  #   cols / plots +
-  #   plot_layout(nrow = 2, heights = c(0.01, 1))
-  # ggsave(paste0(fig_path, "figure3_placebo_pre_vs_post.png"), width = 8000, height = 4400, units = "px")
-
-
-# Figure 4. ex ante forecasts with placebo areas
-  summ_ex_ante = list_rbind(list(post_cf_c_loss_boot_df,
-                                 baseline_best_boot_df,
-                                 baseline_loose_boot_df,
-                                 baseline_lagged_boot_df))
-
-  # summ_wide = summ_ex_ante %>%
-  #   dplyr::select(type, mean, project) %>%
-  #   pivot_wider(names_from = "type", values_from = "mean", id_expand = T)
-  # lm_best = lm(cf_c_loss ~ best - 1, data = summ_wide)
-  # lm_loose = lm(cf_c_loss ~ loose - 1, data = summ_wide)
-  # lm_lagged = lm(cf_c_loss ~ lagged - 1, data = summ_wide)
-
-  # #calculate R2
-  # r2 = c(summary(lm_best)$r.squared, summary(lm_loose)$r.squared, summary(lm_lagged)$r.squared) %>% round(., 3)
-
-  # #calculate MAE
-  # mae_val = c(mean(abs(summ_wide$cf_c_loss - summ_wide$best)),
-  #             mean(abs(summ_wide$cf_c_loss - summ_wide$loose)),
-  #             mean(abs(summ_wide$cf_c_loss - summ_wide$lagged), na.rm = T)) %>% round(., 2)
-
-  p_regional = plotPlacebo(dat = summ_ex_ante %>% filter(type %in% c("cf_c_loss", "loose")), col = "#006CD1")$p
-  p_historical = plotPlacebo(dat = summ_ex_ante %>% filter(type %in% c("cf_c_loss", "best")), col = "#40B0A6")$p
-  p_lagged = plotPlacebo(dat = summ_ex_ante %>% filter(type %in% c("cf_c_loss", "lagged")), col = "#CDAC60")$p
+  p_regional = out_regional$p
+  p_project = out_project$p +
+    theme(axis.title.y = element_blank(), axis.text.y = element_blank(), axis.ticks.y = element_blank())
+  p_historical = out_historical$p +
+    theme(axis.title.y = element_blank(), axis.text.y = element_blank(), axis.ticks.y = element_blank())
+  p_post = out_post$p
 
   # Create column labels
+  col_ante = ggplot() +
+    ggtitle(bquote("A." ~ italic("Ex ante") ~ "forecasts")) +
+    theme_void() + theme(plot.title = element_text(size = 64, hjust = 0.5, margin = margin(t = 10)))
   col_post = ggplot() +
-    ggtitle(bquote(italic("Ex post") ~ " counterfactual")) +
-    theme_void() + theme(plot.title = element_text(size = 40, hjust = 0.5))
-  col_regional = ggplot() +
-    ggtitle(bquote(atop(italic("Ex ante") ~ "forecasts", "using regionally matched pixels"))) +
-    theme_void() + theme(plot.title = element_text(size = 40, hjust = 0.5))
-  col_historical = ggplot() +
-    ggtitle(bquote(atop(italic("Ex ante") ~ "forecasts", "using historic placebo carbon loss"))) +
-    theme_void() + theme(plot.title = element_text(size = 40, hjust = 0.5))
-  col_lagged = ggplot() +
-    ggtitle(bquote(atop(italic("Ex ante") ~ "forecasts", "using time-lagged matching pixels"))) +
-    theme_void() + theme(plot.title = element_text(size = 40, hjust = 0.5))
+    ggtitle(bquote("B." ~ italic("Ex post") ~ "match")) +
+    theme_void() + theme(plot.title = element_text(size = 64, hjust = 0.5, margin = margin(t = 10)))
 
-  plots = (p_post + p_regional + p_historical + p_lagged) +
+  col_regional = ggplot() +
+    ggtitle("Recent regional") +
+    theme_void() + theme(plot.title = element_text(size = 60, hjust = 0.5, margin = margin(t = 10)))
+  col_project = ggplot() +
+    ggtitle("Recent project") +
+    theme_void() + theme(plot.title = element_text(size = 60, hjust = 0.5, margin = margin(t = 10)))
+  col_historical = ggplot() +
+    ggtitle("Time-shifted historical match") +
+    theme_void() + theme(plot.title = element_text(size = 60, hjust = 0.5, margin = margin(t = 10)))
+
+# Figure 3a. ex ante forecasts with placebo areas
+  plots = (p_regional + p_project + p_historical) +
     plot_layout(nrow = 1, guides = "collect", axis_titles = "collect")
-  cols = (col_post + col_regional + col_historical + col_lagged) +
+  cols = (col_regional + col_project + col_historical) +
     plot_layout(nrow = 1)
   plot_complete =
-    cols / plots +
-    plot_layout(nrow = 2, heights = c(0.01, 1))
-  ggsave(paste0(fig_path, "figure4_placebo_all_4.png"), width = 48, height = 12, units = "in")
-}
+    col_ante / cols / plots +
+    plot_layout(nrow = 3, heights = c(0.02, 0.01, 1))
+  ggsave(paste0(fig_path, "figure3a_placebo_ex_ante_new.png"), width = 48, height = 20, units = "in")
+
+# Figure 3b. ex post estimation with placebo areas
+  plot_complete =
+    col_post / p_post +
+    plot_layout(nrow = 2, heights = c(0.02, 1))
+  ggsave(paste0(fig_path, "figure3b_placebo_ex_post.png"), width = 18, height = 20, units = "in")
+
+# Figure 4. t-test result
+
+  # Create a named vector for labels of different types
+  label_types = c(
+    "Recent regional" = "Recent regional",
+    "Recent project" = "Recent project",
+    "Time-shifted historical match" = "Time-shifted\nhistorical match",
+    "Ex post match" = expression(italic("Ex post") ~ "\nmatch")
+  )
+  colors = c("#006CD1", "#40B0A6", "#CDAC60", "black")
+
+  t_out_list = list(out_regional$t, out_project$t, out_historical$t, out_post$t)
+  t_out_df = lapply(t_out_list, function(x) {
+    data.frame(estimate = as.numeric(x$estimate),
+               ci_lower = as.numeric(x$conf.int[1]),
+               ci_upper = as.numeric(x$conf.int[2]),
+               pval = as.numeric(x$p.value))
+    }) %>%
+    list_rbind() %>%
+    mutate(type = factor(names(label_types), levels = names(label_types)))
+
+  p_t_out = ggplot(data = t_out_df, aes(x = type)) +
+    geom_col(aes(y = estimate, fill = type)) +
+    geom_hline(yintercept = 0, linewidth = 1, linetype = 2) +
+    geom_errorbar(aes(ymin = ci_lower, ymax = ci_upper), width = 0.2, linewidth = 0.5) +
+    geom_text(aes(y = pmax(0, ci_upper) + 0.05, label = ifelse(round(pval, 2) == 0, "< 0.01", round(pval, 2))), size = 5) +
+    scale_fill_manual(values = colors, guide = NULL) +
+    scale_x_discrete(labels = label_types) +
+    labs(x = "Estimate type", y = "Estimate-to-observed difference") +
+    theme_bw() +
+    theme(axis.title = element_text(size = 18),
+          axis.text = element_text(size = 16),
+          plot.margin = unit(c(1, 1, 1, 1), "cm"),
+          axis.title.x = element_text(margin = margin(t = 20)),
+          axis.text.x = element_text(margin = margin(t = 30), hjust = 0.5, vjust = 0.5))
+  ggsave(paste0(fig_path, "figure4_t_test_out.png"), width = 10, height = 10, units = "in")
+  }
 
 
+scale_color_manual(values = c(best = "#40B0A6", loose = "#006CD1", lagged = "#CDAC60")) +
+
+# Figure in SI: ongoing projects
 if(analysis_type == "ongoing") {
-  post_cf_c_loss_boot_df = read.csv(paste0(out_path, "_post_cf_c_loss.csv"), header = T)
-  baseline_best_boot_df = read.csv(paste0(out_path, "_baseline_best_boot.csv"), header = T)
-  baseline_loose_boot_df = read.csv(paste0(out_path, "_baseline_loose_boot.csv"), header = T)
-  baseline_lagged_boot_df = read.csv(paste0(out_path, "_baseline_lagged_boot.csv"), header = T)
+  closs_ante_regional = read.csv(paste0(out_path, "_baseline_loose_boot.csv"), header = T)
+  closs_ante_project = read.csv(paste0(out_path, "_baseline_best_boot.csv"), header = T)
+  closs_ante_historical = read.csv(paste0(out_path, "_baseline_lagged_boot.csv"), header = T)
+  closs_post_counterfactual = read.csv(paste0(out_path, "_post_cf_c_loss.csv"), header = T)
+
+  # Create plots
+  out_regional = plotPlacebo(dat = rbind(closs_post_counterfactual, closs_ante_regional),
+                             label_to_x = "cf_c_loss", col = "#006CD1")
+  out_project = plotPlacebo(dat = rbind(closs_post_counterfactual, closs_ante_project),
+                            label_to_x = "cf_c_loss", col = "#40B0A6")
+  out_historical = plotPlacebo(dat = rbind(closs_post_counterfactual, closs_ante_historical),
+                               label_to_x = "cf_c_loss", col = "#CDAC60")
+
+  p_regional = out_regional$p
+  p_project = out_project$p +
+    theme(axis.title.y = element_blank(), axis.text.y = element_blank(), axis.ticks.y = element_blank())
+  p_historical = out_historical$p +
+    theme(axis.title.y = element_blank(), axis.text.y = element_blank(), axis.ticks.y = element_blank())
+
+  # Create column labels
+  col_ante = ggplot() +
+    ggtitle(bquote(italic("Ex ante") ~ "forecasts")) +
+    theme_void() + theme(plot.title = element_text(size = 40, hjust = 0.5))
+
+  col_regional = ggplot() +
+    ggtitle("Recent regional") +
+    theme_void() + theme(plot.title = element_text(size = 40, hjust = 0.5))
+  col_project = ggplot() +
+    ggtitle("Recent project") +
+    theme_void() + theme(plot.title = element_text(size = 40, hjust = 0.5))
+  col_historical = ggplot() +
+    ggtitle("Time-shifted historical match") +
+    theme_void() + theme(plot.title = element_text(size = 40, hjust = 0.5))
+
+  plots = (p_regional + p_project + p_historical) +
+    plot_layout(nrow = 1, guides = "collect", axis_titles = "collect")
+  cols = (col_regional + col_project + col_historical) +
+    plot_layout(nrow = 1)
+  plot_complete =
+    col_ante / cols / plots +
+    plot_layout(nrow = 3, heights = c(0.02, 0.01, 1))
+  ggsave(paste0(fig_path, "figure_s4_ongoing_projects_new.png"), width = 48, height = 16, units = "in")
+
+# ---TO BE REMOVED AFTER THIS LINE--- #
 
   summ = list_rbind(list(post_cf_c_loss_boot_df,
                          baseline_best_boot_df,
@@ -670,35 +730,6 @@ if(analysis_type == "ongoing") {
     filter(eff > 0) %>%
     arrange(eff) %>%
     mutate(code = factor(code, levels = code))
-
-  # Figure 5. show spread of project effectiveness before and after correction
-  # p7 = ggplot(data = eff_plot) +
-  #   geom_segment(aes(x = code, y = eff_lower, yend = eff_upper), color = "blue", linewidth = 2) +
-  #   geom_rect(aes(xmin = as.numeric(code) - 0.4,
-  #                 xmax = as.numeric(code) + 0.4,
-  #                 ymin = 0.1, ymax = eff), fill = "lightblue") +
-  #   geom_text(aes(x = code, y = eff * 0.85, label = code), color = "darkblue", size = 10) +
-  #   geom_hline(yintercept = c(0.2, 0.5, 1), linetype = 3, linewidth = 1.2) +
-  #   scale_x_discrete(name = "", labels = NULL) +
-  #   scale_y_continuous(limits = c(0.1, 36),
-  #                      breaks = c(0.1, 0.2, 0.5, 1, 1.5, 2, 3, 5, 10, 20, 36),
-  #                      expand = c(0, 0),
-  #                      transform = scales::transform_log10()) +
-  #   labs(title = "A. Before correction",
-  #        x = "Project code",
-  #        y = "Project performance ratio") +
-  #   theme_bw() +
-  #   theme(panel.border = element_rect(color = "black", fill = NA),
-  #         panel.grid = element_blank(),
-  #         plot.title = element_text(size = 48, hjust = 0.5, margin = margin(b = 10)),
-  #         axis.title = element_text(size = 40),
-  #         axis.text = element_text(size = 36),
-  #         axis.title.y = element_text(margin = margin(r = 10)),
-  #         axis.text.y = element_text(margin = margin(r = 10)),
-  #         axis.ticks.x = element_blank(),
-  #         axis.ticks.y = element_line(linewidth = 2),
-  #         axis.ticks.length.y = unit(.5, "cm"),
-  #         legend.position = "none")
 
   eff_med = median(eff_plot$eff_corr)
   median(eff_plot$eff_corr_lower)

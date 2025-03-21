@@ -46,7 +46,7 @@ simulate_area_series = function(pts_matched,
   area = area * match_sample_adj
   # print(area)
 
-  area_series = make_area_series(pts_matched %>% na.omit(), area_ha = area, class_prefix = class_prefix, lagged = lagged)
+  area_series = make_area_series(pts_matched, area = area, class_prefix = class_prefix, lagged = lagged)
   if(verbose) {
     out = list(series = area_series, balance = match_assess$sum.matched)
   } else {
@@ -58,14 +58,8 @@ simulate_area_series = function(pts_matched,
   #   return(NULL)
 }
 
-make_area_series = function(pts, area_ha, class_prefix, lagged = F) {
-  if(lagged) {
-    pts_years_selected = pts[str_detect(colnames(pts), paste0(class_prefix, "\\.?[:digit:]{1}$|", class_prefix, "\\.?[:digit:]{2}$|treatment"))]
-  } else {
-    pts_years_selected = pts[str_detect(colnames(pts), paste0(class_prefix, '[:digit:]{4}$|treatment'))]
-  }
-
-  aaa = pts_years_selected %>%
+make_area_series = function(pts, area, class_prefix, lagged = F) {
+  aaa = pts %>%
     # select(-matches(paste('_[1-6]$', sep = ''))) %>% # exclude proportional cover values
     as.data.frame() %>%
     # select(-id, -X2010_agb, -(accessibility:transition), treatment) %>% 
@@ -96,7 +90,7 @@ make_area_series = function(pts, area_ha, class_prefix, lagged = F) {
     group_by(treatment, year) %>%
     mutate(n_total = sum(n),                   # total number of points in sample
            class_prop = n / n_total,           # the proportion of points in each class
-           class_area = class_prop * area_ha,  # the area of the project this represents
+           class_area = class_prop * area,     # the area (ha) of the project this represents
            # class_agb = class_area * agb,       # the above ground biomass
            # class_co2e = class_agb * cf_c* cf_co2e
            )

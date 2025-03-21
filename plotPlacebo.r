@@ -1,7 +1,7 @@
-plotPlacebo = function(dat, col = "black") {
+plotPlacebo = function(dat, label_to_x, col = "black") {
     dat = dat %>%
-        mutate(type = replace(type, type != "cf_c_loss", "estimate")) %>%
-        mutate(type = recode(type, "cf_c_loss" = "measure"))
+        mutate(type = replace(type, type != label_to_x, "estimate")) %>%
+        mutate(type = replace(type, type == label_to_x, "measure"))
 
     summ_wide_mean = dat %>%
         dplyr::select(type, mean, project) %>%
@@ -43,12 +43,14 @@ plotPlacebo = function(dat, col = "black") {
                     bquote(R^2 * ": " * .(r2)))
     )
 
+    t_out = t.test(summ_wide_mean$estimate, summ_wide_mean$measure, paired = T)
+
     p = ggplot(data = summ_wide_mean, aes(x = measure, y = estimate)) +
         geom_point(size = 6, color = col) +
         geom_segment(data = summ_ci_x, aes(x = x0, xend = x1, y = y), color = col, linewidth = 1.2) +
         geom_segment(data = summ_ci_y, aes(x = x, y = y0, yend = y1), color = col, linewidth = 1.2) +
-        geom_text(data = note_df, aes(x = x, y = y, label = text), hjust = 0, size = 15, parse = T) +
-        geom_abline(intercept = 0, slope = 1, linetype = 3) +
+        geom_text(data = note_df, aes(x = x, y = y, label = text), hjust = 0, size = 17, parse = T) +
+        geom_abline(intercept = 0, slope = 1, linetype = 3, linewidth = 1.5) +
         scale_x_continuous(limits = c(-0.2, 2.6), expand = c(0, 0)) + #ensures no padding
         scale_y_continuous(limits = c(-0.2, 2.6), expand = c(0, 0)) +
         labs(x = bquote("Observed carbon loss (MgC" ~ ha^"-1" ~ yr^"-1" * ")"),
@@ -56,11 +58,10 @@ plotPlacebo = function(dat, col = "black") {
         theme_bw() +
         theme(panel.border = element_rect(color = "black", fill = NA),
               panel.grid = element_blank(),
-              plot.title = element_text(size = 48, hjust = 0.5, margin = margin(b = 10)),
-              axis.title = element_text(size = 40),
+              axis.title = element_text(size = 48),
               axis.title.x = element_text(margin = margin(t = 20)),
               axis.title.y = element_text(margin = margin(r = 20)),
-              axis.text = element_text(size = 36),
+              axis.text = element_text(size = 44),
               axis.text.x = element_text(margin = margin(t = 10)),
               axis.text.y = element_text(margin = margin(r = 10)),
               axis.ticks = element_line(linewidth = 2),
@@ -69,5 +70,5 @@ plotPlacebo = function(dat, col = "black") {
               legend.title = element_text(size = 32, margin = margin(t = 10)),
               legend.text = element_text(size = 32, margin = margin(t = 10)))
 
-    return(list(p = p, lm = lm_out))
+    return(list(p = p, lm = lm_out, t = t_out))
 }
