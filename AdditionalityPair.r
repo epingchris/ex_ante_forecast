@@ -38,8 +38,8 @@
 
         # For when lagged = T: remove columns "JRC2021" "JRC2022" which contain only NA's
         if(lagged) {
-            control = control[!str_detect(colnames(control), "JRC\\.[1-9]$|JRC\\.1[0-9]$|JRC0$")]
-            treat = treat[!str_detect(colnames(treat), "JRC\\.[1-9]$|JRC\\.1[0-9]$|JRC0$")]
+            control = control[!str_detect(colnames(control), "JRC2021$|JRC2022$")]
+            treat = treat[!str_detect(colnames(treat), , "JRC2021$|JRC2022$")]
         }
 
         exp_n_pairs = nrow(treat) + nrow(unmatched_pairs)
@@ -70,9 +70,11 @@
         out_df = data.frame(year = carbon_wide$year[-1],
                             c_loss = -diff(carbon_wide$control),
                             t_loss = -diff(carbon_wide$treatment)) %>%
-            mutate(additionality = c_loss - t_loss, pair = j) %>%
-            filter(year <= 11 & year >= 2) %>%
-            mutate(year = 1:10)
+            mutate(additionality = c_loss - t_loss, pair = j)
+            # %>%
+            #filter(year <= 11 & year >= 2)
+            # %>%
+            #mutate(year = 1:10)
         pair_end = Sys.time()
         cat(j, ":", pair_end - pair_start, "\n")
         return(list(out_df = out_df, pts_matched = pts_matched, exp_n_pairs = exp_n_pairs))
