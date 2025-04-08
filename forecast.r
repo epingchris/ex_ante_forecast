@@ -2,10 +2,6 @@
 rm(list = ls())
 
 #Load packages
-# install.packages(c("arrow","configr", "tidyverse", "magrittr", "sf", "magrittr", "MatchIt",
-#                    "rnaturalearthdata", "configr", "terra", "pbapply", "cleangeo", "doParallel",
-#                    "foreach", "readr", "lwgeom", "rnaturalearth", "stars", "Metrics", "patchwork"), depends = TRUE)
-
 library(tidyverse) #ggplot2, dplyr, stringr, plotPlacebo/plotBaseline.r: tibble to store labels with bquote()
 library(magrittr) #pipe operators
 library(units) #units::set_units
@@ -19,8 +15,7 @@ library(patchwork)
 #library(pryr) #pryr::object_size
 #library(parallel) #parallel::mclapply
 
-#Remove dplyr summarise grouping message because it prints a lot
-options(dplyr.summarise.inform = F)
+options(dplyr.summarise.inform = F) #remove dplyr summarise grouping message because it prints a lot
 
 #Load pre-defined functions
 source("functions.r") #cpc_rename, tmfemi_reformat, simulate_area_series, make_area_series, assess_balance, make_match_formula
@@ -86,11 +81,10 @@ BootOut = function(type, in_df, boot_n = 1000) {
 # A. Read input (E-Ping's workflow) ----
 
 #Define analysis type
-analysis_type = "control"
+analysis_type = "ongoing"
 #"control": placebo "projects"
 #"ongoing": ongoing REDD+ projects (best-matched and loosely-matched baselines)
 #"ac": Amazonian Collective polygons
-ofir = F
 
 polygon_dir = "/maps/epr26/tmf-data/projects/" #where polygons are stored
 lagged_dir = "/maps/epr26/tmf_pipe_out_lagged/" #where the results for the lagged baselines are stored
@@ -107,7 +101,7 @@ if(analysis_type == "ongoing") {
     dplyr::select(ID, COUNTRY, t0)
 
   #Find all project IDs
-  exclude_strings = c("slopes", "elevation", "srtm", "ac", "as", "\\.", "\\_", "0000", "9999")
+  exclude_strings = c("archive", "slopes", "elevation", "srtm", "ac", "as", "\\.", "\\_", "0000", "9999")
   projects = map(exclude_strings, function(x) FindFiles(project_dir, x, negate = T)) %>%
     reduce(intersect)
 
@@ -259,94 +253,90 @@ pairs_lagged_list = vector("list", length(projects))
 
 # B. Get additionality and baseline ----
 for(i in seq_along(projects)) {
+  t0 = t0_vec[i]
+  luc_t_20 = paste0("luc_", t0_vec[i] - 20)
+  luc_t_10 = paste0("luc_", t0_vec[i] - 10)
+  luc_t0 = paste0("luc_", t0_vec[i])
 
-    t0 = t0_vec[i]
-    luc_t_20 = paste0("luc_", t0_vec[i] - 20)
-    luc_t_10 = paste0("luc_", t0_vec[i] - 10)
-    luc_t0 = paste0("luc_", t0_vec[i])
+  area_ha = area_ha_vec[i]
+  acd = acd_list[[i]]
+  pair_dir = pair_dirs[i]
 
-    area_ha = area_ha_vec[i]
-    acd = acd_list[[i]]
-    pair_dir = pair_dirs[i]
+  k = read_parquet(k_paths[i]) %>%
+    rename(luc10 = all_of(luc_t_10), luc0 = all_of(luc_t0), k_ecoregion = ecoregion) %>%
+    as.data.frame() %>%
+    dplyr::select(lat, lng, k_ecoregion)
 
-    k = read_parquet(k_paths[i]) %>%
-      rename(luc10 = all_of(luc_t_10), luc0 = all_of(luc_t0), k_ecoregion = ecoregion) %>%
-      as.data.frame() %>%
-      dplyr::select(lat, lng, k_ecoregion)
+  setM = read_parquet(m_paths[i]) %>%
+    rename(luc10 = all_of(luc_t_10), luc0 = all_of(luc_t0), s_ecoregion = ecoregion) %>%
+    as.data.frame()
 
-    setM = read_parquet(m_paths[i]) %>%
-      rename(luc10 = all_of(luc_t_10), luc0 = all_of(luc_t0), s_ecoregion = ecoregion) %>%
-      as.data.frame()
+  matches = setM %>%
+    dplyr::select(lat, lng, s_ecoregion)
 
-    matches = setM %>%
-      dplyr::select(lat, lng, s_ecoregion)
+  a = Sys.time()
+  pairs_best = AdditionalityPair(pair_dir = pair_dir, t0 = t0, area_ha = area_ha, acd = acd,
+                                  k = k, matches = matches, lagged = F)
+  b = Sys.time()
+  cat("Project", i, "/", length(projects), "-", projects[i], "- pairs_best :", b - a, "\n")
 
-    a = Sys.time()
-    pairs_best = AdditionalityPair(pair_dir = pair_dir, t0 = t0, area_ha = area_ha, acd = acd,
-                                   k = k, matches = matches, lagged = F)
-    b = Sys.time()
-    cat("Project", i, "/", length(projects), "-", projects[i], "- pairs_best :", b - a, "\n")
+  additionality = lapply(pairs_best, function(x) x$out_df) %>%
+      list_rbind() %>%
+      mutate(started = ifelse(year > t0, T, F)) %>%
+      mutate(project = projects[i])
 
-    additionality = lapply(pairs_best, function(x) x$out_df) %>%
-        list_rbind() %>%
-        mutate(started = ifelse(year > t0, T, F)) %>%
-        mutate(project = projects[i])
+  baseline_best = lapply(pairs_best, function(x) {
+      filter(x$out_df, year <= t0 & year > t0 - 10) %>%
+      dplyr::select(c_loss) %>%
+      mutate(c_loss = c_loss / area_ha)
+  }) %>%
+      list_rbind() %>%
+      mutate(project = projects[i])
 
-    baseline_best = lapply(pairs_best, function(x) {
-        filter(x$out_df, year <= t0 & year > t0 - 10) %>%
-        dplyr::select(c_loss) %>%
-        mutate(c_loss = c_loss / area_ha)
-    }) %>%
-        list_rbind() %>%
-        mutate(project = projects[i])
+  write.csv(additionality, paste0(out_path, "_additionality_", projects[i], ".csv"), row.names = F)
+  write.csv(baseline_best, paste0(out_path, "_baseline_best_", projects[i], ".csv"), row.names = F)
 
-    write.csv(additionality, paste0(out_path, "_additionality_", projects[i], ".csv"), row.names = F)
-    write.csv(baseline_best, paste0(out_path, "_baseline_best_", projects[i], ".csv"), row.names = F)
+  setM = setM %>%
+    dplyr::select(-starts_with("luc_")) %>%
+    dplyr::select(-starts_with("cpc"))
+  if(nrow(setM) > 250000) setM = setM[sample(nrow(setM), 250000), ]
 
-    setM = setM %>%
-      dplyr::select(-starts_with("luc_")) %>%
-      dplyr::select(-starts_with("cpc"))
-    if(nrow(setM) > 250000) setM = setM[sample(nrow(setM), 250000), ]
+  baseline_loose = setM %>%
+      mutate(acd10 = acd$carbon.density[match(luc10, acd$land.use.class)],
+              acd0 = acd$carbon.density[match(luc0, acd$land.use.class)],
+              c_loss = (acd10 - acd0) / 10) %>%
+      dplyr::select(c_loss) %>%
+      mutate(project = projects[i])
 
-    baseline_loose = setM %>%
-        mutate(acd10 = acd$carbon.density[match(luc10, acd$land.use.class)],
-               acd0 = acd$carbon.density[match(luc0, acd$land.use.class)],
-               c_loss = (acd10 - acd0) / 10) %>%
-        dplyr::select(c_loss) %>%
-        mutate(project = projects[i])
+  write.csv(baseline_loose, paste0(out_path, "_baseline_loose_", projects[i], ".csv"), row.names = F)
 
-    write.csv(baseline_loose, paste0(out_path, "_baseline_loose_", projects[i], ".csv"), row.names = F)
+  baseline_lagged = data.frame(c_loss = numeric())
+  if(!(is.na(k_paths_lagged[i]) | is.na(m_paths_lagged[i]))) {
+      pair_dir_lagged = pair_dirs_lagged[i]
+      k_lagged = read_parquet(k_paths_lagged[i]) %>%
+        rename(luc10 = all_of(luc_t_10), luc0 = all_of(luc_t0), k_ecoregion = ecoregion) %>%
+        as.data.frame() %>%
+        dplyr::select(lat, lng, k_ecoregion)
+      matches_lagged = read_parquet(m_paths_lagged[i]) %>%
+        rename(luc10 = all_of(luc_t_20), luc0 = all_of(luc_t_10), s_ecoregion = ecoregion) %>%
+        as.data.frame() %>%
+        dplyr::select(lat, lng, s_ecoregion)
 
-    baseline_lagged = data.frame(c_loss = numeric())
-    if(!(is.na(k_paths_lagged[i]) | is.na(m_paths_lagged[i]))) {
-        pair_dir_lagged = pair_dirs_lagged[i]
-        k_lagged = read_parquet(k_paths_lagged[i]) %>%
-          rename(luc10 = all_of(luc_t_10), luc0 = all_of(luc_t0), k_ecoregion = ecoregion) %>%
-          as.data.frame() %>%
-          dplyr::select(lat, lng, k_ecoregion)
-        matches_lagged = read_parquet(m_paths_lagged[i]) %>%
-          rename(luc10 = all_of(luc_t_20), luc0 = all_of(luc_t_10), s_ecoregion = ecoregion) %>%
-          as.data.frame() %>%
-          dplyr::select(lat, lng, s_ecoregion)
+      a = Sys.time()
+      pairs_lagged = AdditionalityPair(pair_dir = pair_dir_lagged, t0 = t0, area_ha = area_ha, acd = acd,
+                                        k = k_lagged, matches = matches_lagged, lagged = T)
+      b = Sys.time()
+      cat("Project", i, "/", length(projects), "-", projects[i], "- pairs_lagged :", b - a, "\n")
+  }
 
-        a = Sys.time()
-        pairs_lagged_list[[i]] = AdditionalityPair(pair_dir = pair_dir_lagged, t0 = t0, area_ha = area_ha, acd = acd,
-                                         k = k_lagged, matches = matches_lagged, lagged = T)
-        b = Sys.time()
-        cat("Project", i, "/", length(projects), "-", projects[i], "- pairs_lagged :", b - a, "\n")
-    }
-}
-
-for(i in seq_along(projects)) {
-        pairs_lagged = pairs_lagged_list[[i]]
-        baseline_lagged = lapply(pairs_lagged, function(x) {
-            filter(x$out_df, year < 10 & year > 0) %>%
-            dplyr::select(c_loss) %>%
-            mutate(c_loss = c_loss / area_ha)
-        }) %>%
-            list_rbind() %>%
-            mutate(project = projects[i])
-    write.csv(baseline_lagged, paste0(out_path, "_baseline_lagged_new_", projects[i], ".csv"), row.names = F)
+  baseline_lagged = lapply(pairs_lagged, function(x) {
+      filter(x$out_df, year < 10 & year > 0) %>%
+      dplyr::select(c_loss) %>%
+      mutate(c_loss = c_loss / area_ha)
+  }) %>%
+      list_rbind() %>%
+      mutate(project = projects[i])
+  write.csv(baseline_lagged, paste0(out_path, "_baseline_lagged_", projects[i], ".csv"), row.names = F)
 }
 
 
@@ -792,47 +782,4 @@ if(analysis_type == "ongoing") {
     plot_layout(axes = "collect", axis_titles = "collect")
   p8
   ggsave(paste0(fig_path, "figure5_effectiveness_after.png"), width = 4000, height = 4000, units = "px")
-
-
 }
-
-
-#OPTIONAL output: only basic variables, additionality distribution data to send to Ofir
-if(ofir) {
-    write.table(project_var %>% dplyr::select(project, t0, country, area_ha),
-                paste0(out_path, "_project_var_basic.csv"), sep = ",", row.names = F)
-
-    additionality_distribution = lapply(seq_along(projects), function(i) {
-        additionality = read.csv(paste0(out_path, "_additionality_", projects[i], ".csv"), header = T)
-
-        additionality %>%
-            filter(started) %>%
-            dplyr::select(year, additionality, pair) %>%
-            mutate(project = projects[i])
-    }) %>%
-        list_rbind()
-    write.csv(additionality_distribution, paste0("/maps/epr26/tmf_pipe_out/additionality_distribution.csv"), row.names = F)
-}
-
-
-#Compare with Jody's output
-analysis_type = "ongoing"
-out_path = paste0("/maps/epr26/ex_ante_forecast_out/out_", analysis_type) #where outputs are stored
-observed_add_boot_df = read.csv(paste0(out_path, "_observed_add.csv"), header = T)
-
-observed_add_jody = read.csv("/maps/epr26/ex_ante_forecast_out/merged_additionality_by_jody.csv", header = T)
-year_max = observed_add_jody[nrow(observed_add_jody), ]$year
-
-observed_add_jody_mean = observed_add_jody %>%
-  filter(year == year_max) %>%
-  rename_with(function(x) gsub("X", "", gsub("_additionality", "", x))) %>%
-  pivot_longer(cols = !year, names_to = "ID", values_to = "cumul_add") %>%
-  mutate(ID = as.numeric(ID)) %>%
-  left_join(x = ., y = project_var %>% dplyr::select("ID", "t0", "area_ha"), by = "ID") %>%
-  filter(!is.na(t0)) %>%
-  mutate(additionality_jody = cumul_add / ((year - t0) * area_ha))
-
-observed_add_boot_compare = observed_add_boot_df %>%
-  left_join(x = ., y = project_var %>% dplyr::select("ID", "t0", "area_ha"), by = join_by(project == ID)) %>%
-  left_join(x = ., y = observed_add_jody_mean %>% dplyr::select("ID", "additionality_jody"), by = join_by(project == ID))
-write.csv(observed_add_boot_compare, paste0("/maps/epr26/ex_ante_forecast_out/additionality_compare.csv"), row.names = F)

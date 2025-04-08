@@ -1,13 +1,21 @@
-This R repository reads the output of the TMF implementation (https://github.com/quantifyearth/tmf-implementation) as input, and estimates baseline carbon loss rates (MgC ha-1 yr-1) constructed using one of the three possible pixel-matching approaches as well as ex post project and counterfactual carbon losses and yearly per-area additionality gain (MgC ha-1 yr-1).
+# Generating _ex ante_ forecasts for planned REDD+ projects
 
+This project generates ex ante forecasts of carbon outcomes of REDD+ projects and evaluates methods of counterfactual estimation. As input, it uses the output of the implementation code of the Canopy PACT 2.0 methodology for tropical forest carbon accreditation (https://github.com/quantifyearth/tmf-implementation) code, which are parquet files for a given set of projects and parquet files for their matched pixels.
 
-The core script, forecast.R, contains the following five parts:
+This project adopts the method judged to be the most suitable based on the analysis in (epingchris/placebo_evaluation) to generate _ex ante_ forecasts of counterfactual carbon loss rates (MgC ha-1 yr-1) for ongoing REDD+ projects, and compares them against ex post estimated additionality.
+
+## Requirements
+
+This project is developed under R 4.2, and requires the packages `tidyverse`, `magrittr`, `units`, `sf`, `arrow`, `MatchIt`, `boot`, `scales`, `Metrics`, and `patchwork`. The `sf` package runs on GDAL 3.10.
+
+## Structure
+
+The project contains a core script (forecast.R), which is divided into the following five parts:
 0. Setup
 A. Obtain observed additionality
 B. Predict deforestation probability of baseline pixels using logistic regression
 C. Calculate boostrapped baseline C loss
 D. Generate additionality forecast and estimate overclaiming risk
-
 
 It requires the following input variables to read TMF implementation output and other data.
 All variables are vectors containing one value for each project to be analysed:
