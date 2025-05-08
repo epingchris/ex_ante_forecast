@@ -20,9 +20,8 @@ options(dplyr.summarise.inform = F) #remove dplyr summarise grouping message bec
 #Load pre-defined functions
 source("FindFiles.r") #wrapper function to search files or folders based on inclusion/exclusion keywords
 source("ReformatPixels.r") #wrapper function to reformat column names of data frame of matched pixels
-source("GetAreaSeries.r") #function to generate time series of annual change in area of each land class
 source("AssessBalance.r") #function to assess matching balance
-source("GetCarbonLoss.r")
+source("GetCarbonLoss.r") #function to generate time series of annual change in project-level average carbon density
 source("CalcError.r")
 source("plotPlacebo.r")
 source("plotBaseline.r")
