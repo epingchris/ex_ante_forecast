@@ -4,14 +4,14 @@ rm(list = ls())
 #Load packages
 library(tidyverse) #ggplot2, dplyr, stringr, plotPlacebo/plotBaseline.r: tibble to store labels with bquote()
 library(magrittr) #pipe operators
-library(units) #units::set_units
 library(sf) #sf::st_area; runs on GDAL 3.10
 library(arrow) #arrow::read_parquet
-library(MatchIt) #MatchIt::matchit
+library(MatchIt) #MatchIt::matchit, used in the customised function AssessBalance()
 library(boot) #boot::boot
 library(scales) #scales::trans_break
 library(Metrics) #CalcError.r: rmse, mae
 library(patchwork)
+#library(units) #units::set_units
 #library(pryr) #pryr::object_size
 #library(parallel) #parallel::mclapply
 
@@ -19,8 +19,10 @@ options(dplyr.summarise.inform = F) #remove dplyr summarise grouping message bec
 
 #Load pre-defined functions
 source("FindFiles.r") #wrapper function to search files or folders based on inclusion/exclusion keywords
-source("functions.r") #cpc_rename, tmfemi_reformat, simulate_area_series, make_area_series, assess_balance, make_match_formula
-source("AdditionalityPair.r")
+source("ReformatPixels.r") #wrapper function to reformat column names of data frame of matched pixels
+source("GetAreaSeries.r") #function to generate time series of annual change in area of each land class
+source("AssessBalance.r") #function to assess matching balance
+source("GetCarbonLoss.r")
 source("CalcError.r")
 source("plotPlacebo.r")
 source("plotBaseline.r")
@@ -104,7 +106,7 @@ fig_path = paste0("/maps/epr26/ex_ante_forecast_out/out_") #where figures are st
 out_path = paste0("/maps/epr26/ex_ante_forecast_out/out_", analysis_type) #where outputs are stored
 
 
-# B. Get additionality and baseline ----
+# B. Get ex post additionality, project and regional carbon loss rates ----
 for(i in seq_along(projects)) {
   t0 = t0_vec[i]
   luc_t_20 = paste0("luc_", t0_vec[i] - 20)
@@ -114,73 +116,80 @@ for(i in seq_along(projects)) {
   cdens = cdens_list[[i]]
   pair_dir = paste0(project_out_dirs[i], "/pairs/")
 
-@@@
-  setM = read_parquet(m_paths[i]) %>%
-    rename(luc10 = all_of(luc_t_10), luc0 = all_of(luc_t0), s_ecoregion = ecoregion) %>%
-    as.data.frame()
-
   a = Sys.time()
-  pairs_best = AdditionalityPair(pair_dir = pair_dir, t0 = t0, area_ha = area_ha, acd = acd, lagged = F)
-  b = Sys.time()
-  cat("Project", i, "/", length(projects), "-", projects[i], "- pairs_best :", b - a, "\n")
+  #find paths to match and unmatached points in each sampled pairs
+  pair_paths = FindFiles(pair_dir, include = ".parquet", full = T)
+  matched_paths = pair_paths %>% str_subset("matchless", negate = T)
+  matchless_paths = pair_paths %>% str_subset("matchless")
 
-  additionality = lapply(pairs_best, function(x) x$out_df) %>%
-      list_rbind() %>%
-      mutate(started = ifelse(year > t0, T, F)) %>%
-      mutate(project = projects[i])
+  if(length(matched_paths) == 0) {
+    cat("No matches\n")
+    closs_df = NULL
+    expost_add = NULL
+    closs_project = NULL
+  } else {
+    pairs_out = lapply(seq_along(matched_paths), function(j) {
+      pair_start = Sys.time()
 
-  baseline_best = lapply(pairs_best, function(x) {
-      filter(x$out_df, year <= t0 & year > t0 - 10) %>%
-      dplyr::select(c_loss) %>%
-      mutate(c_loss = c_loss / area_ha)
-  }) %>%
-      list_rbind() %>%
-      mutate(project = projects[i])
+      matched_path = matched_paths[j]
+      matchless_path = matchless_paths[j]
 
-  write.csv(additionality, paste0(out_path, "_additionality_", projects[i], ".csv"), row.names = F)
-  write.csv(baseline_best, paste0(out_path, "_baseline_best_", projects[i], ".csv"), row.names = F)
+      pairs = read_parquet(matched_path) %>%
+        dplyr::select(-dplyr::ends_with(c("_x", "_y", "_trt", "_cluster")))
+      unmatched_pairs = read_parquet(matchless_path) %>%
+        dplyr::select(-dplyr::ends_with(c("_x", "_y", "_trt", "_cluster")))
+      area_adj_ratio = nrow(pairs) / (nrow(pairs) + nrow(unmatched_pairs))
 
-  setM = setM %>%
-    dplyr::select(-starts_with("luc_")) %>%
-    dplyr::select(-starts_with("cpc"))
-  if(nrow(setM) > 250000) setM = setM[sample(nrow(setM), 250000), ]
+      pixels_cf = ReformatPixels(in_df = pairs, prefix = "s_", t0 = t0, treatment = "counterfactual", pair = j)
+      pixels_p = ReformatPixels(in_df = pairs, prefix = "k_", t0 = t0, treatment = "project", pair = j)
+      pixels_matched = rbind(pixels_cf, pixels_p)
 
-  baseline_loose = setM %>%
-      mutate(acd10 = acd$carbon.density[match(luc10, acd$land.use.class)],
-              acd0 = acd$carbon.density[match(luc0, acd$land.use.class)],
-              c_loss = (acd10 - acd0) / 10) %>%
-      dplyr::select(c_loss) %>%
-      mutate(project = projects[i])
+      #assess matching balance
+      balance_assessment = AssessBalance(pixels_matched, t0 = t0)
 
-  write.csv(baseline_loose, paste0(out_path, "_baseline_loose_", projects[i], ".csv"), row.names = F)
+      #calculate carbon time series
+      carbon_cf = GetCarbonLoss(pixels_cf, t0, area_ha, area_adj_ratio, cdens, pair = j)
+      carbon_p = GetCarbonLoss(pixels_p, t0, area_ha, area_adj_ratio, cdens, pair = j)
 
-  baseline_lagged = data.frame(c_loss = numeric())
-  if(!(is.na(k_paths_lagged[i]) | is.na(m_paths_lagged[i]))) {
-      pair_dir_lagged = paste0(project_out_dirs_lagged[i], "/pairs/")
-      k_lagged = read_parquet(k_paths_lagged[i]) %>%
-        rename(luc10 = all_of(luc_t_10), luc0 = all_of(luc_t0), k_ecoregion = ecoregion) %>%
-        as.data.frame() %>%
-        dplyr::select(lat, lng, k_ecoregion)
-      matches_lagged = read_parquet(m_paths_lagged[i]) %>%
-        rename(luc10 = all_of(luc_t_20), luc0 = all_of(luc_t_10), s_ecoregion = ecoregion) %>%
-        as.data.frame() %>%
-        dplyr::select(lat, lng, s_ecoregion)
+      pair_end = Sys.time()
+      cat(j, ":", pair_end - pair_start, "\n")
 
-      a = Sys.time()
-      pairs_lagged = AdditionalityPair(pair_dir = pair_dir_lagged, t0 = t0, area_ha = area_ha, acd = acd,
-                                        k = k_lagged, matches = matches_lagged, lagged = T)
-      b = Sys.time()
-      cat("Project", i, "/", length(projects), "-", projects[i], "- pairs_lagged :", b - a, "\n")
+      return(list(carbon_cf = carbon_cf, carbon_p = carbon_p,
+                  pixels_matched = pixels_matched, area_adj_ratio = area_adj_ratio,
+                  balance_assessment = balance_assessment))
+    })
   }
 
-  baseline_lagged = lapply(pairs_lagged, function(x) {
-      filter(x$out_df, year < 10 & year > 0) %>%
-      dplyr::select(c_loss) %>%
-      mutate(c_loss = c_loss / area_ha)
-  }) %>%
-      list_rbind() %>%
-      mutate(project = projects[i])
-  write.csv(baseline_lagged, paste0(out_path, "_baseline_lagged_", projects[i], ".csv"), row.names = F)
+  b = Sys.time()
+  cat("Project", i, "/", length(projects), "-", projects[i], "- project carbon loss :", b - a, "\n")
+
+  closs_cf_df = lapply(pairs_out, function(x) x$carbon_cf$carbon_loss) %>%
+    list_rbind() %>%
+    mutate(treatment = "counterfactual")
+  closs_p_df = lapply(pairs_out, function(x) x$carbon_p$carbon_loss) %>%
+    list_rbind() %>%
+    mutate(treatment = "project")
+
+  expost_add = rbind(closs_cf_df, closs_p_df) %>%
+    pivot_wider(values_from = "c_loss", names_from = "treatment") %>%
+    mutate(ID = projects[i], additionality = counterfactual - project) %>%
+    filter(year > t0)
+
+  closs_project = closs_p_df %>%
+      filter(year <= t0 & year > t0 - 10)
+
+  write.csv(expost_add, paste0(out_path, "_additionality_", projects[i], ".csv"), row.names = F)
+  write.csv(closs_project, paste0(out_path, "_project_closs_rate_", projects[i], ".csv"), row.names = F)
+
+  a = Sys.time()
+  setM = read_parquet(m_paths[i])
+  if(nrow(setM) > 250000) setM = setM[sample(nrow(setM), 250000), ]
+  pixels_region = ReformatPixels(in_df = setM, prefix = "", t0 = t0, treatment = "region", pair = 1)
+  closs_region = GetCarbonLoss(pixels_region, t0, area_ha, area_adj_ratio = 1, cdens, pair = 1)$carbon_loss
+  b = Sys.time()
+  cat("Project", i, "/", length(projects), "-", projects[i], "- regional carbon loss :", b - a, "\n")
+
+  write.csv(closs_region, paste0(out_path, "_regional_closs_rate_", projects[i], ".csv"), row.names = F)
 }
 
 
