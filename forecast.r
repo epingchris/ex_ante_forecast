@@ -24,12 +24,23 @@ source("CalcError.r")
 source("plotPlacebo.r")
 source("plotBaseline.r")
 
-FindFiles = function(dir, pattern, full = F, negate = F) {
-  file_matched = list.files(dir, full = full) %>% str_subset(pattern, negate = negate)
-  if(length(file_matched) == 0) {
+FindFiles = function(dir, include = NULL, exclude = NULL, full = F) {
+  files = list.files(dir, full = full)
+
+  if (!is.null(include)) {
+    include_pattern = paste(include, collapse = "|")
+    files = files %>% str_subset(include_pattern)
+  }
+
+  if (!is.null(exclude)) {
+    exclude_pattern = paste(exclude, collapse = "|")
+    files = files %>% str_subset(exclude_pattern, negate = T)
+  }
+
+  if(length(files) == 0) {
     return(NA)
   } else {
-    return(file_matched)
+    return(files)
   }
 }
 
@@ -55,8 +66,9 @@ BootOut = function(type, in_df, boot_n = 1000) {
 # This should correspond to the filenames of the shapefiles and to the -p argument in the implementation code
 # It is usually be the ongoing projects' VCS ID or customised (e.g. prefixed series of integers)
 
-#2. pair_dirs: absolute paths of the directories containing all matched pair pixel sets (typically "/pairs/xxx.parquet" and  "/pairs/xxx_matchless.parquet")
+#2. project_out_dirs: absolute paths of the directories containing all implementation outputs
 # The directory should containing pairs of parquet files with the same file name, with and without the "_matchless" suffix.
+# (typically "/pairs/xxx.parquet" and  "/pairs/xxx_matchless.parquet")
 # This is used to calculate estimated observed additionality.
 
 #3. k_paths: absolute paths of the set K (typically "k.parquet")
@@ -90,156 +102,31 @@ polygon_dir = "/maps/epr26/tmf-data/projects/" #where polygons are stored
 lagged_dir = "/maps/epr26/tmf_pipe_out_lagged/" #where the results for the lagged baselines are stored
 out_path = paste0("/maps/epr26/ex_ante_forecast_out/out_", analysis_type) #where outputs are stored
 fig_path = paste0("/maps/epr26/ex_ante_forecast_out/out_") #where figures are stored
-projects_to_exclude = c("674", "934", "2502", "1408", "sa11", "1686", "1122", "1650") #which projects to exclude manually; 1122 not done yet
+#projects_to_exclude = c("674", "934", "2502", "1408", "1686", "1650") #which projects to exclude manually
 
-#Based on analysis type, find project names and store in vector "projects", and project basic info and store in dataframe "proj_info"
-if(analysis_type == "ongoing") {
-  project_dir = "/maps/epr26/tmf_pipe_out/" #define where implementation code results are stored
+project_var = read.csv(paste0(out_path, "_project_var.csv"), header = T)
 
-  #Load basic information (csv file copied from Tom's directory)
-  proj_info = read.csv("proj_meta.csv") %>%
-    dplyr::select(ID, COUNTRY, t0)
-
-  #Find all project IDs
-  exclude_strings = c("archive", "slopes", "elevation", "srtm", "ac", "as", "\\.", "\\_", "0000", "9999")
-  projects = map(exclude_strings, function(x) FindFiles(project_dir, x, negate = T)) %>%
-    reduce(intersect)
-
-} else if(analysis_type == "control") {
-  project_dir = "/maps/epr26/tmf_pipe_out_luc_t/" #define where implementation code results are stored
-
-  #Load basic information
-  proj_info = read.csv("proj_meta_control.csv") %>%
-    dplyr::select(ID, COUNTRY, t0)
-
-  #Find all project IDs
-  projects = map(c("asn", "af", "sa"), function(x) FindFiles(project_dir, x)) %>%
-    reduce(union) %>%
-    str_subset("\\.", negate = T)
-
-} else if(analysis_type == "ac") {
-  project_dir = "/maps/epr26/tmf_pipe_out/" #define where implementation code results are stored
-
-  #Load basic information
-  proj_info = data.frame(ID = paste0("ac", sprintf("%02d", c(1:6))), COUNTRY = "Brazil", t0 = 2021)
-
-  #Amazonian Collective polygons
-  projects = paste0("ac", sprintf("%02d", c(1:6)))
-
+#Retrieve input paths needed for the analysis
+project_out_dirs = paste0(project_dir, project_var$ID)
+project_out_dirs_lagged = paste0(lagged_dir, project_var$ID)
+k_paths = rep(NA, length(project_var$ID))
+m_paths = rep(NA, length(project_var$ID))
+k_paths_lagged = rep(NA, length(project_var$ID))
+m_paths_lagged = rep(NA, length(project_var$ID))
+for(i in seq_along(project_var$ID)) {
+  k_paths[i] = FindFiles(project_out_dirs[i], "k.parquet", full = T)
+  m_paths[i] = FindFiles(project_out_dirs[i], "matches.parquet", full = T)
+  k_paths_lagged[i] = FindFiles(project_out_dirs_lagged[i], "k.parquet", full = T)
+  m_paths_lagged[i] = FindFiles(project_out_dirs_lagged[i], "matches.parquet", full = T)
 }
 
-done_vec = sapply(projects, function(x) FindFiles(paste0(project_dir, x, "/pairs"), ".parquet") %>% length() == 200)
-
-#only keep projects with complete ACD values for LUC 1, 2, 3, and 4
-full_acd_vec = sapply(projects, function(x) {
-  acd_path = FindFiles(paste0(project_dir, x), "carbon-density", full = T)
-  if(!is.na(acd_path)) acd = read.csv(acd_path)
-  acd = acd[, 1:2]
-  colnames(acd) = c("land.use.class", "carbon.density")
-  return(Reduce("&", 1:4 %in% acd$land.use.class))
-})
-
-projects_df = data.frame(project = projects, done = done_vec, full_acd = full_acd_vec)
-projects_df$to_exclude = projects_df$project %in% projects_to_exclude
-write.csv(projects_df, paste0(out_path, "_project_status.csv"), row.names = F)
-projects = subset(projects_df, done & full_acd & !to_exclude)$project
-
-#Produce input variables needed for the analysis
-pair_dirs = paste0(project_dir, projects, "/pairs/")
-k_paths = rep(NA, length(projects))
-m_paths = rep(NA, length(projects))
-acd_paths = rep(NA, length(projects))
-for(i in seq_along(projects)) {
-  project_out_dir = paste0(project_dir, projects[i])
-  k_paths[i] = FindFiles(project_out_dir, "k.parquet", full = T)
-  m_paths[i] = FindFiles(project_out_dir, "matches.parquet", full = T)
-  acd_paths[i] = FindFiles(project_out_dir, "carbon-density.csv", full = T)
-}
-
-pair_dirs_lagged = paste0(lagged_dir, projects, "/pairs/")
-k_paths_lagged = rep(NA, length(projects))
-m_paths_lagged = rep(NA, length(projects))
-for(i in seq_along(projects)) {
-  project_out_dir_lagged = paste0(lagged_dir, projects[i])
-  k_paths_lagged[i] = FindFiles(project_out_dir_lagged, "k.parquet", full = T)
-  m_paths_lagged[i] = FindFiles(project_out_dir_lagged, "matches.parquet", full = T)
-}
-
-polygon_paths = paste0(polygon_dir, projects, ".geojson")
-proj_ID = gsub("(?<=[0-9])a$", "", projects, perl = T)
-project_var = proj_info[match(proj_ID, proj_info$ID), ]
-t0_vec = project_var$t0
-
-#vector containing area (ha) of every project
-area_ha_vec = sapply(seq_along(projects), function(i) {
-  area_ha_i = st_read(polygon_paths[i]) %>%
-    st_make_valid() %>%
-    st_union() %>%
-    st_transform(4326) %>%
-    st_area() %>% #area in m^2
-    set_units(ha) #convert into hectares
-  return(area_ha_i)
-})
-project_var$area_ha = area_ha_vec
-
-#list containing data frame of ACD (MgC/ha) per LUC of every project
-acd_list = lapply(seq_along(projects), function(i) {
-  acd_i = read.csv(acd_paths[i])
-  acd_i = acd_i[, 1:2]
-  colnames(acd_i) = c("land.use.class", "carbon.density")
-  for(class in 1:6) {
-    if(class %in% acd_i$land.use.class == F) acd_i = rbind(acd_i, c(class, NA))
-  }
-  return(acd_i)
-})
-names(acd_list) = projects
-project_var$acd_undisturbed = sapply(acd_list, function(x) filter(x, land.use.class == 1)$carbon.density)
-
-if(analysis_type == "ongoing") {
-  project_var = project_var %>%
-    arrange(ID) %>%
-    mutate(code = LETTERS[1:nrow(project_var)])
-  project_var = project_var[match(projects, project_var$ID), ]
-}
-
-#Output: project-level variables
-write.csv(project_var, paste0(out_path, "_project_var.csv"), row.names = F)
-#project_var = read.csv(paste0(out_path, "_project_var.csv"), header = T)
-
-#Output: carbon density per land class for S1 in manuscript
-lapply(acd_list, function(x) {
-  x = x %>%
-    sort(land.use.class)
-})
-
-acd_df = acd_list %>%
-  imap(function(.x, .y) {
-    .x %>%
-      mutate(project = .y) %>%
-      filter(land.use.class != 0) %>% #land use class 0 doesn't mean anything
-      pivot_wider(names_from = land.use.class, values_from = carbon.density, names_prefix = "class_")
-  }) %>%
-  list_rbind() %>%
-  relocate(project, sort(tidyselect::peek_vars())) #sort columns by land class
-
-if(analysis_type == "ongoing") {
-  acd_df = acd_df %>%
-    arrange(as.numeric(project)) #sort rows by project ID
-} else {
-  acd_df = acd_df %>%
-    arrange(project) #sort rows by project ID
-}
-write.csv(acd_df, paste0(out_path, "_carbon_density_per_project.csv"), row.names = F)
-#project_var = read.csv(paste0(out_path, "_project_var.csv"), header = T)
 
 
 # A2. Read input (user-defined) ----
 
 #projects = NULL
-#pair_dirs = NULL
 #k_paths = NULL
 #m_paths = NULL
-#pair_dirs_lagged = NULL
 #k_paths_lagged = NULL
 #m_paths_lagged = NULL
 #polygon_paths = NULL
@@ -260,7 +147,7 @@ for(i in seq_along(projects)) {
 
   area_ha = area_ha_vec[i]
   acd = acd_list[[i]]
-  pair_dir = pair_dirs[i]
+  pair_dir = paste0(project_out_dirs[i], "/pairs/")
 
   k = read_parquet(k_paths[i]) %>%
     rename(luc10 = all_of(luc_t_10), luc0 = all_of(luc_t0), k_ecoregion = ecoregion) %>%
@@ -312,7 +199,7 @@ for(i in seq_along(projects)) {
 
   baseline_lagged = data.frame(c_loss = numeric())
   if(!(is.na(k_paths_lagged[i]) | is.na(m_paths_lagged[i]))) {
-      pair_dir_lagged = pair_dirs_lagged[i]
+      pair_dir_lagged = paste0(project_out_dirs_lagged[i], "/pairs/")
       k_lagged = read_parquet(k_paths_lagged[i]) %>%
         rename(luc10 = all_of(luc_t_10), luc0 = all_of(luc_t0), k_ecoregion = ecoregion) %>%
         as.data.frame() %>%
