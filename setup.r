@@ -24,49 +24,25 @@ library(magrittr) #pipe operators
 library(units) #units::set_units
 library(sf) #sf::st_area; runs on GDAL 3.10
 
-#Load wrapper function
-FindFiles = function(dir, include = NULL, exclude = NULL, full = F) {
-  files = list.files(dir, full = full)
-
-  if (!is.null(include)) {
-    include_pattern = paste(include, collapse = "|")
-    files = files %>% str_subset(include_pattern)
-  }
-
-  if (!is.null(exclude)) {
-    exclude_pattern = paste(exclude, collapse = "|")
-    files = files %>% str_subset(exclude_pattern, negate = T)
-  }
-
-  if(length(files) == 0) {
-    return(NA)
-  } else {
-    return(files)
-  }
-}
+source("FindFiles.r") #wrapper function to search files or folders based on inclusion/exclusion keywords
 
 #define input variables
 analysis_type = "ongoing" #analysis type
-polygon_dir = "/maps/epr26/tmf-data/projects/" #where polygons are stored
-out_path = paste0("/maps/epr26/ex_ante_forecast_out/out_", analysis_type) #where outputs are stored
+project_dir = "/maps/epr26/tmf_pipe_out/" #path to directories containing implementation outputs
+polygon_dir = "/maps/epr26/tmf-data/projects/" #path to polygons
+out_path = paste0("/maps/epr26/ex_ante_forecast_out/out_", analysis_type) #path to store script output
 
 #define input variables that depend on analysis type
 if(analysis_type == "ongoing") {
-  #define where to look for directories containing implementation outputs
-  project_dir = "/maps/epr26/tmf_pipe_out/"
-
   #load basic information (csv file copied from Tom's directory)
   proj_info = read.csv("proj_meta.csv") %>%
     dplyr::select(ID, COUNTRY, t0)
 
   #define include and exclude strings
   include_strings = NULL
-  exclude_strings = c("archive", "slopes", "elevation", "srtm", "\\.", "\\_")
+  exclude_strings = c("archive", "slopes", "elevation", "srtm", "asn", "af", "sa", "\\.", "\\_")
 
 } else if(analysis_type == "placebo") {
-  #define where to look for directories containing implementation outputs
-  project_dir = "/maps/epr26/tmf_pipe_out_luc_t/"
-
   #load basic information
   proj_info = read.csv("proj_meta_placebo.csv") %>%
     dplyr::select(ID, COUNTRY, t0)
@@ -78,7 +54,6 @@ if(analysis_type == "ongoing") {
 
 #Find directories containing implementation outputs and save project names in vector "projects"
 projects = FindFiles(project_dir, include = include_strings, exclude = exclude_strings)
-
 
 #Retrieve data frames containing carbon density (MgC/ha) per LUC
 cdens_paths = rep(NA, length(projects))
@@ -109,11 +84,10 @@ projects = subset(projects_status, carbon_complete & done)$project
 
 #Retrieve project variables
 project_var = proj_info[match(projects, proj_info$ID), ]
-t0_vec = project_var$t0
 
 #Retrieve project areas (ha)
 polygon_paths = paste0(polygon_dir, projects, ".geojson")
-area_ha_vec = sapply(seq_along(projects), function(i) {
+project_var$area_ha = sapply(seq_along(projects), function(i) {
   area_ha_i = st_read(polygon_paths[i]) %>%
     st_make_valid() %>%
     st_union() %>%
@@ -122,7 +96,6 @@ area_ha_vec = sapply(seq_along(projects), function(i) {
     set_units(ha) #convert into hectares
   return(area_ha_i)
 })
-project_var$area_ha = area_ha_vec
 
 #Retrieve carbon density
 cdens_df = cdens_list %>%

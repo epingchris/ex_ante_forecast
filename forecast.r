@@ -18,31 +18,12 @@ library(patchwork)
 options(dplyr.summarise.inform = F) #remove dplyr summarise grouping message because it prints a lot
 
 #Load pre-defined functions
+source("FindFiles.r") #wrapper function to search files or folders based on inclusion/exclusion keywords
 source("functions.r") #cpc_rename, tmfemi_reformat, simulate_area_series, make_area_series, assess_balance, make_match_formula
 source("AdditionalityPair.r")
 source("CalcError.r")
 source("plotPlacebo.r")
 source("plotBaseline.r")
-
-FindFiles = function(dir, include = NULL, exclude = NULL, full = F) {
-  files = list.files(dir, full = full)
-
-  if (!is.null(include)) {
-    include_pattern = paste(include, collapse = "|")
-    files = files %>% str_subset(include_pattern)
-  }
-
-  if (!is.null(exclude)) {
-    exclude_pattern = paste(exclude, collapse = "|")
-    files = files %>% str_subset(exclude_pattern, negate = T)
-  }
-
-  if(length(files) == 0) {
-    return(NA)
-  } else {
-    return(files)
-  }
-}
 
 BootOut = function(type, in_df, boot_n = 1000) {
   boot_out = boot::boot(data = in_df,
@@ -90,53 +71,38 @@ BootOut = function(type, in_df, boot_n = 1000) {
 #10. out_path: absolute paths of the directory where outputs are to be saved; include file prefix if desired
 
 
-# A. Read input (E-Ping's workflow) ----
+# A. Read input ----
 
-#Define analysis type
 analysis_type = "ongoing"
-#"control": placebo "projects"
-#"ongoing": ongoing REDD+ projects (best-matched and loosely-matched baselines)
-#"ac": Amazonian Collective polygons
-
-polygon_dir = "/maps/epr26/tmf-data/projects/" #where polygons are stored
-lagged_dir = "/maps/epr26/tmf_pipe_out_lagged/" #where the results for the lagged baselines are stored
-out_path = paste0("/maps/epr26/ex_ante_forecast_out/out_", analysis_type) #where outputs are stored
-fig_path = paste0("/maps/epr26/ex_ante_forecast_out/out_") #where figures are stored
-#projects_to_exclude = c("674", "934", "2502", "1408", "1686", "1650") #which projects to exclude manually
-
-project_var = read.csv(paste0(out_path, "_project_var.csv"), header = T)
+in_path = paste0("/maps/epr26/ex_ante_forecast_out/out_", analysis_type) #path of setup script output
+project_dir = "/maps/epr26/tmf_pipe_out/" #path to directories containing implementation outputs
+lagged_dir = "/maps/epr26/tmf_pipe_out_lagged/" #path to directories containing implementation outputs (lagged matching)
+project_var = read.csv(paste0(in_path, "_project_var.csv"), header = T)
+projects = project_var$ID
+t0_vec = project_var$t0
+area_ha_vec = project_var$area_ha
+cdens_list = project_var %>%
+  dplyr::select(ID, cdens_1:cdens_6) %>%
+  pivot_longer(cdens_1:cdens_6, names_to = "land.use.class", names_prefix = "cdens_", values_to = "carbon.density") %>%
+  split(f = .$ID)
 
 #Retrieve input paths needed for the analysis
-project_out_dirs = paste0(project_dir, project_var$ID)
-project_out_dirs_lagged = paste0(lagged_dir, project_var$ID)
-k_paths = rep(NA, length(project_var$ID))
-m_paths = rep(NA, length(project_var$ID))
-k_paths_lagged = rep(NA, length(project_var$ID))
-m_paths_lagged = rep(NA, length(project_var$ID))
-for(i in seq_along(project_var$ID)) {
+project_out_dirs = paste0(project_dir, projects)
+project_out_dirs_lagged = paste0(lagged_dir, projects)
+k_paths = rep(NA, length(projects))
+m_paths = rep(NA, length(projects))
+k_paths_lagged = rep(NA, length(projects))
+m_paths_lagged = rep(NA, length(projects))
+for(i in seq_along(projects)) {
   k_paths[i] = FindFiles(project_out_dirs[i], "k.parquet", full = T)
   m_paths[i] = FindFiles(project_out_dirs[i], "matches.parquet", full = T)
   k_paths_lagged[i] = FindFiles(project_out_dirs_lagged[i], "k.parquet", full = T)
   m_paths_lagged[i] = FindFiles(project_out_dirs_lagged[i], "matches.parquet", full = T)
 }
 
+fig_path = paste0("/maps/epr26/ex_ante_forecast_out/out_") #where figures are stored
+out_path = paste0("/maps/epr26/ex_ante_forecast_out/out_", analysis_type) #where outputs are stored
 
-
-# A2. Read input (user-defined) ----
-
-#projects = NULL
-#k_paths = NULL
-#m_paths = NULL
-#k_paths_lagged = NULL
-#m_paths_lagged = NULL
-#polygon_paths = NULL
-#t0_vec = NULL
-#area_ha_vec = NULL
-#acd_list = NULL
-#out_path = NULL
-#fig_path = NULL
-
-pairs_lagged_list = vector("list", length(projects))
 
 # B. Get additionality and baseline ----
 for(i in seq_along(projects)) {
@@ -144,26 +110,17 @@ for(i in seq_along(projects)) {
   luc_t_20 = paste0("luc_", t0_vec[i] - 20)
   luc_t_10 = paste0("luc_", t0_vec[i] - 10)
   luc_t0 = paste0("luc_", t0_vec[i])
-
   area_ha = area_ha_vec[i]
-  acd = acd_list[[i]]
+  cdens = cdens_list[[i]]
   pair_dir = paste0(project_out_dirs[i], "/pairs/")
 
-  k = read_parquet(k_paths[i]) %>%
-    rename(luc10 = all_of(luc_t_10), luc0 = all_of(luc_t0), k_ecoregion = ecoregion) %>%
-    as.data.frame() %>%
-    dplyr::select(lat, lng, k_ecoregion)
-
+@@@
   setM = read_parquet(m_paths[i]) %>%
     rename(luc10 = all_of(luc_t_10), luc0 = all_of(luc_t0), s_ecoregion = ecoregion) %>%
     as.data.frame()
 
-  matches = setM %>%
-    dplyr::select(lat, lng, s_ecoregion)
-
   a = Sys.time()
-  pairs_best = AdditionalityPair(pair_dir = pair_dir, t0 = t0, area_ha = area_ha, acd = acd,
-                                  k = k, matches = matches, lagged = F)
+  pairs_best = AdditionalityPair(pair_dir = pair_dir, t0 = t0, area_ha = area_ha, acd = acd, lagged = F)
   b = Sys.time()
   cat("Project", i, "/", length(projects), "-", projects[i], "- pairs_best :", b - a, "\n")
 

@@ -1,4 +1,4 @@
-  AdditionalityPair = function(pair_dir, t0, area_ha, acd, k, matches, lagged) {
+  AdditionalityPair = function(pair_dir, t0, area_ha, acd, lagged) {
     #find paths to match and unmatached points in each sampled pairs
     pair_paths = FindFiles(pair_dir, ".parquet", full = T)
     matched_paths = pair_paths %>% str_subset("matchless", negate = T)
@@ -17,10 +17,6 @@
 
         pairs = read_parquet(matched_path) %>%
             dplyr::select(-dplyr::any_of(c("k_x", "k_y", "s_x", "s_y")))
-
-        #add ecoregion information to each matched pixel if it is not already there
-        if("k_ecoregion" %in% colnames(pairs) == F) pairs = dplyr::left_join(pairs, k, by = join_by(k_lat == lat, k_lng == lng))
-        if("s_ecoregion" %in% colnames(pairs) == F) pairs = dplyr::left_join(pairs, matches, by = join_by(s_lat == lat, s_lng == lng))
 
         unmatched_pairs = read_parquet(matchless_path)
 
