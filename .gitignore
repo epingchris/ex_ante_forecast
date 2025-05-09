@@ -1,4 +1,8 @@
 *.png
 *.csv
 sandbox.r
+ofir.r
+compare_eping_jody.r
+memory_usage_logger.py
+merge_proj_meta_control.r
 venv/

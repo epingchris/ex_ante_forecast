@@ -29,12 +29,8 @@ GetCarbonLoss = function(pixels, t0, area_ha, area_adj_ratio, cdens, adjustArea 
     group_by(year) %>%
     summarise(carbon_density = sum(carbon_density, na.rm = T)) %>%
     ungroup() %>%
-    mutate(pair = pair)
+    mutate(pair = pair) %>%
+    dplyr::select(!geometry)
 
-  #calculate annual fluxes of carbon density
-  carbon_loss = data.frame(year = carbon_series$year[-1],
-                           c_loss = -diff(carbon_series$carbon_density),
-                           pair = pair)
-
-  return(list(carbon_series = carbon_series, carbon_loss = carbon_loss))
+  return(carbon_series)
 }

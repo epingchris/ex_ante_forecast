@@ -89,16 +89,11 @@ cdens_list = project_var %>%
 
 #Retrieve input paths needed for the analysis
 project_out_dirs = paste0(project_dir, projects)
-project_out_dirs_lagged = paste0(lagged_dir, projects)
 k_paths = rep(NA, length(projects))
 m_paths = rep(NA, length(projects))
-k_paths_lagged = rep(NA, length(projects))
-m_paths_lagged = rep(NA, length(projects))
 for(i in seq_along(projects)) {
   k_paths[i] = FindFiles(project_out_dirs[i], "k.parquet", full = T)
   m_paths[i] = FindFiles(project_out_dirs[i], "matches.parquet", full = T)
-  k_paths_lagged[i] = FindFiles(project_out_dirs_lagged[i], "k.parquet", full = T)
-  m_paths_lagged[i] = FindFiles(project_out_dirs_lagged[i], "matches.parquet", full = T)
 }
 
 fig_path = paste0("/maps/epr26/ex_ante_forecast_out/out_") #where figures are stored
@@ -162,32 +157,48 @@ for(i in seq_along(projects)) {
   b = Sys.time()
   cat("Project", i, "/", length(projects), "-", projects[i], "- project carbon loss :", b - a, "\n")
 
-  closs_cf_df = lapply(pairs_out, function(x) x$carbon_cf$carbon_loss) %>%
-    list_rbind() %>%
-    mutate(treatment = "counterfactual")
-  closs_p_df = lapply(pairs_out, function(x) x$carbon_p$carbon_loss) %>%
-    list_rbind() %>%
-    mutate(treatment = "project")
-
-  expost_add = rbind(closs_cf_df, closs_p_df) %>%
-    pivot_wider(values_from = "c_loss", names_from = "treatment") %>%
-    mutate(ID = projects[i], additionality = counterfactual - project) %>%
-    filter(year > t0)
-
-  closs_project = closs_p_df %>%
-      filter(year <= t0 & year > t0 - 10)
-
-  write.csv(expost_add, paste0(out_path, "_additionality_", projects[i], ".csv"), row.names = F)
-  write.csv(closs_project, paste0(out_path, "_project_closs_rate_", projects[i], ".csv"), row.names = F)
-
   a = Sys.time()
   setM = read_parquet(m_paths[i])
   if(nrow(setM) > 250000) setM = setM[sample(nrow(setM), 250000), ]
   pixels_region = ReformatPixels(in_df = setM, prefix = "", t0 = t0, treatment = "region", pair = 1)
-  closs_region = GetCarbonLoss(pixels_region, t0, area_ha, area_adj_ratio = 1, cdens, pair = 1)$carbon_loss
+  closs_region = GetCarbonLoss(pixels_region, t0, area_ha, area_adj_ratio = 1, cdens, pair = 1)
   b = Sys.time()
   cat("Project", i, "/", length(projects), "-", projects[i], "- regional carbon loss :", b - a, "\n")
 
+  carbon_cf = lapply(pairs_out, function(x) x$carbon_cf) %>%
+    list_rbind() %>%
+    mutate(treatment = "counterfactual")
+
+  carbon_p = lapply(pairs_out, function(x) x$carbon_p) %>%
+    list_rbind() %>%
+    mutate(treatment = "project")
+
+  carbon_matched = rbind(carbon_cf, carbon_p) %>%
+    pivot_wider(values_from = "carbon_density", names_from = "treatment")
+
+  tmax = max(carbon_matched$year)
+  additionality = carbon_combined %>%
+    filter(year >= t0) %>%
+    group_by(pair) %>%
+    mutate(diff_cf = first(counterfactual) - counterfactual,
+           diff_p = first(project) - project,
+           additionality_whole = diff_cf - diff_p,
+           additionality_annual = exp(log(additionality_whole) / (year - t0)))
+
+  project_rate = carbon_matched %>%
+    filter(year <= t0) %>%
+    group_by(pair) %>%
+    mutate(closs = project - last(project),
+           closs_annual = exp(log(closs) / (t0 - year)))
+
+  region_rate = closs_region %>%
+    filter(year <= t0) %>%
+    group_by(pair) %>%
+    mutate(closs = carbon_density - last(carbon_density),
+           closs_annual = exp(log(closs) / (t0 - year)))
+
+  write.csv(additionality_df, paste0(out_path, "_additionality_", projects[i], ".csv"), row.names = F)
+  write.csv(project_rate, paste0(out_path, "_project_closs_rate_", projects[i], ".csv"), row.names = F)
   write.csv(closs_region, paste0(out_path, "_regional_closs_rate_", projects[i], ".csv"), row.names = F)
 }
 
