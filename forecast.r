@@ -2,13 +2,13 @@
 rm(list = ls())
 
 #Load packages
-library(tidyverse) #ggplot2, dplyr, stringr, plotPlacebo/plotBaseline.r: tibble to store labels with bquote()
+library(tidyverse) #ggplot2, dplyr, and stringr used in plotPlacebo/plotBaseline.r: tibble to store labels with bquote()
 library(magrittr) #pipe operators
-library(sf) #sf::st_area; runs on GDAL 3.10
-library(arrow) #arrow::read_parquet
-library(MatchIt) #MatchIt::matchit, used in the customised function AssessBalance()
-library(boot) #boot::boot
-library(scales) #scales::trans_break
+library(sf) #st_drop_geometry() used in GetCarbonLoss.r (runs on GDAL 3.10)
+library(arrow) #read_parquet()
+library(MatchIt) #matchit(), used in the customised function AssessBalance()
+library(boot) #boot
+library(scales) #trans_break
 library(Metrics) #CalcError.r: rmse, mae
 library(patchwork)
 #library(units) #units::set_units
@@ -22,22 +22,10 @@ source("FindFiles.r") #wrapper function to search files or folders based on incl
 source("ReformatPixels.r") #wrapper function to reformat column names of data frame of matched pixels
 source("AssessBalance.r") #function to assess matching balance
 source("GetCarbonLoss.r") #function to generate time series of annual change in project-level average carbon density
+source("BootOut.r")
 source("CalcError.r")
 source("plotPlacebo.r")
 source("plotBaseline.r")
-
-BootOut = function(type, in_df, boot_n = 1000) {
-  boot_out = boot::boot(data = in_df,
-                        statistic = function(dat, ind) mean(dat[ind, ], na.rm = T), #function for bootstrapped mean
-                        R = boot_n)
-  boot_ci = boot::boot.ci(boot.out = boot_out, type = "perc")
-  boot_summ = data.frame(type = type,
-                          mean = mean(boot_out$t),
-                          ci_lower = boot_ci$percent[4],
-                          ci_upper = boot_ci$percent[5])
-  return(list(t = boot_out$t, summ = boot_summ))
-}
-
 
 #Define input variables needed to read TMF implementation output and other data
 
@@ -132,6 +120,8 @@ for(i in seq_along(projects)) {
         dplyr::select(-dplyr::ends_with(c("_x", "_y", "_trt", "_cluster")))
       unmatched_pairs = read_parquet(matchless_path) %>%
         dplyr::select(-dplyr::ends_with(c("_x", "_y", "_trt", "_cluster")))
+
+      #calculate proportion of unmatched pixels, used to adjust the area represented by sample: is this still necessary?
       area_adj_ratio = nrow(pairs) / (nrow(pairs) + nrow(unmatched_pairs))
 
       pixels_cf = ReformatPixels(in_df = pairs, prefix = "s_", t0 = t0, treatment = "counterfactual", pair = j)
@@ -141,7 +131,7 @@ for(i in seq_along(projects)) {
       #assess matching balance
       balance_assessment = AssessBalance(pixels_matched, t0 = t0)
 
-      #calculate carbon time series
+      #retrieve carbon time series for project and matched counterfactual
       carbon_cf = GetCarbonLoss(pixels_cf, t0, area_ha, area_adj_ratio, cdens, pair = j)
       carbon_p = GetCarbonLoss(pixels_p, t0, area_ha, area_adj_ratio, cdens, pair = j)
 
@@ -161,6 +151,8 @@ for(i in seq_along(projects)) {
   setM = read_parquet(m_paths[i])
   if(nrow(setM) > 250000) setM = setM[sample(nrow(setM), 250000), ]
   pixels_region = ReformatPixels(in_df = setM, prefix = "", t0 = t0, treatment = "region", pair = 1)
+
+  #retrieve carbon time series for surrounding region
   closs_region = GetCarbonLoss(pixels_region, t0, area_ha, area_adj_ratio = 1, cdens, pair = 1)
   b = Sys.time()
   cat("Project", i, "/", length(projects), "-", projects[i], "- regional carbon loss :", b - a, "\n")
@@ -175,9 +167,10 @@ for(i in seq_along(projects)) {
 
   carbon_matched = rbind(carbon_cf, carbon_p) %>%
     pivot_wider(values_from = "carbon_density", names_from = "treatment")
-
   tmax = max(carbon_matched$year)
-  additionality = carbon_combined %>%
+
+  #calculate ex post annual per-area additionality
+  additionality = carbon_matched %>%
     filter(year >= t0) %>%
     group_by(pair) %>%
     mutate(diff_cf = first(counterfactual) - counterfactual,
@@ -185,93 +178,60 @@ for(i in seq_along(projects)) {
            additionality_whole = diff_cf - diff_p,
            additionality_annual = exp(log(additionality_whole) / (year - t0)))
 
-  project_rate = carbon_matched %>%
+  #calculate ex ante within-project annual per-area carbon loss rates
+  ante_project = carbon_matched %>%
     filter(year <= t0) %>%
     group_by(pair) %>%
     mutate(closs = project - last(project),
            closs_annual = exp(log(closs) / (t0 - year)))
 
-  region_rate = closs_region %>%
+  #calculate ex ante regional annual per-area carbon loss rates
+  ante_region = closs_region %>%
     filter(year <= t0) %>%
     group_by(pair) %>%
     mutate(closs = carbon_density - last(carbon_density),
-           closs_annual = exp(log(closs) / (t0 - year)))
+           closs_annual = exp(log(closs) / (t0 - year))) %>%
+    mutate(closs_annual = ifelse(closs_annual >= 0, closs_annual, NA))
 
-  write.csv(additionality_df, paste0(out_path, "_additionality_", projects[i], ".csv"), row.names = F)
-  write.csv(project_rate, paste0(out_path, "_project_closs_rate_", projects[i], ".csv"), row.names = F)
-  write.csv(closs_region, paste0(out_path, "_regional_closs_rate_", projects[i], ".csv"), row.names = F)
+  write.csv(additionality, paste0(out_path, "_additionality_", projects[i], ".csv"), row.names = F)
+  write.csv(ante_project, paste0(out_path, "_project_closs_rate_", projects[i], ".csv"), row.names = F)
+  write.csv(ante_region, paste0(out_path, "_regional_closs_rate_", projects[i], ".csv"), row.names = F)
 }
 
 
-# C. Bootstrap baselines ----
-pre_cf_c_loss_boot_list = vector("list", length(projects))
-pre_p_c_loss_boot_list = vector("list", length(projects))
-post_cf_c_loss_boot_list = vector("list", length(projects))
-post_p_c_loss_boot_list = vector("list", length(projects))
-observed_add_boot_list = vector("list", length(projects))
-baseline_best_boot_list = vector("list", length(projects))
-baseline_loose_boot_list = vector("list", length(projects))
-baseline_lagged_boot_list = vector("list", length(projects))
+# C. Bootstrap outcomes ----
+additionality_boot_list = vector("list", length(projects))
+ante_project_boot_list = vector("list", length(projects))
+ante_region_boot_list = vector("list", length(projects))
 
 for(i in seq_along(projects)) {
-  area_i = area_ha_vec[i]
-  observed = read.csv(paste0(out_path, "_additionality_", projects[i], ".csv"), header = T) %>%
-    mutate(t_loss = t_loss / area_i,
-           c_loss = c_loss / area_i,
-           additionality = additionality / area_i)
-  obs_pre = observed %>% filter(started == F)
-  obs_post = observed %>% filter(started == T)
+  t0 = t0_vec[i]
+  project_i = projects[i]
+  additionality = read.csv(paste0(out_path, "_additionality_", projects[i], ".csv"), header = T)
+  ante_project = read.csv(paste0(out_path, "_project_closs_rate_", projects[i], ".csv"), header = T)
+  ante_region = read.csv(paste0(out_path, "_regional_closs_rate_", projects[i], ".csv"), header = T)
+  tmax = max(additionality$year)
 
-  baseline_best = read.csv(paste0(out_path, "_baseline_best_", projects[i], ".csv"), header = T)
-  baseline_loose = read.csv(paste0(out_path, "_baseline_loose_", projects[i], ".csv"), header = T)
-  baseline_lagged = read.csv(paste0(out_path, "_baseline_lagged_new_", projects[i], ".csv"), header = T)
+  #bootstrap ex post additionality
+  a = Sys.time()
+  additionality_boot_list[[i]] = BootOut(in_df = additionality, column = "additionality_annual", from = t0 + 1, to = tmax) %>%
+    mutate(project = project_i)
+  b = Sys.time()
+  cat("Project", i, "/", length(projects), "-", projects[i], "- additionality bootstrapped:", b - a, "\n")
 
-  time_a = Sys.time()
-  pre_cf_c_loss_boot_list[[i]] = BootOut(type = "cf_c_loss", in_df = dplyr::select(obs_pre, c_loss))$summ %>%
-    mutate(project = projects[i])
-  time_b = Sys.time()
-  cat("Project", i, "/", length(projects), "-", projects[i], "- pre_cf_c_loss_boot :", time_b - time_a, "\n")
+  #bootstrap ex ante project carbon loss rate
+  a = Sys.time()
+  ante_project_boot_list[[i]] = BootOut(in_df = ante_project, column = "closs_annual", from = t0 - 10, to = t0 - 1) %>%
+    mutate(project = project_i)
+  b = Sys.time()
+  cat("Project", i, "/", length(projects), "-", projects[i], "- project rate bootstrapped:", b - a, "\n")
 
-  pre_p_c_loss_boot_list[[i]] = BootOut(type = "p_c_loss", in_df = dplyr::select(obs_pre, t_loss))$summ %>%
-    mutate(project = projects[i])
-  time_c = Sys.time()
-  cat("Project", i, "/", length(projects), "-", projects[i], "- pre_p_c_loss_boot :", time_c - time_b, "\n")
-
-  post_cf_c_loss_boot_list[[i]] = BootOut(type = "cf_c_loss", in_df = dplyr::select(obs_post, c_loss))$summ %>%
-    mutate(project = projects[i])
-  time_d = Sys.time()
-  cat("Project", i, "/", length(projects), "-", projects[i], "- post_cf_c_loss_boot :", time_d - time_c, "\n")
-
-  post_p_c_loss_boot_list[[i]] = BootOut(type = "p_c_loss", in_df = dplyr::select(obs_post, t_loss))$summ %>%
-    mutate(project = projects[i])
-  time_e = Sys.time()
-  cat("Project", i, "/", length(projects), "-", projects[i], "- post_p_c_loss_boot :", time_e - time_d, "\n")
-
-  observed_add_boot_out = BootOut(type = "additionality", in_df = dplyr::select(obs_post, additionality))
-  observed_add_boot_list[[i]] = observed_add_boot_out$summ %>%
-    mutate(project = projects[i])
-  time_f = Sys.time()
-  cat("Project", i, "/", length(projects), "-", projects[i], "- add_boot :", time_f - time_e, "\n")
-
-  baseline_best_boot_out = BootOut(type = "best", in_df = dplyr::select(baseline_best, c_loss))
-  baseline_best_boot_list[[i]] = baseline_best_boot_out$summ %>%
-      mutate(project = projects[i])
-  time_g = Sys.time()
-  cat("Project", i, "/", length(projects), "-", projects[i], "- baseline_best_boot :", time_g - time_f, "\n")
-
-  baseline_loose_boot_list[[i]] = BootOut(type = "loose", in_df = dplyr::select(baseline_loose, c_loss))$summ %>%
-      mutate(project = projects[i])
-   time_h = Sys.time()
-  cat("Project", i, "/", length(projects), "-", projects[i], "- baseline_loose_boot :", time_h - time_g, "\n")
-
-  if(nrow(baseline_lagged) > 0) {
-    baseline_lagged_boot_list[[i]] = BootOut(type = "lagged", in_df = dplyr::select(baseline_lagged, c_loss))$summ %>%
-      mutate(project = projects[i])
-  } else {
-    baseline_lagged_boot_list[[i]] = data.frame(type = character(), mean = numeric(), ci_lower = numeric(), ci_upper = numeric(), project = character())
-  }
-  time_i = Sys.time()
-  cat("Project", i, "/", length(projects), "-", projects[i], "- baseline_lagged_boot :", time_i - time_h, "\n")
+  #bootstrap ex ante regional carbon loss rate
+  a = Sys.time()
+  ante_region_boot_list[[i]] = BootOut(in_df = ante_region, column = "closs_annual", from = t0 - 10, to = t0 - 1) %>%
+    mutate(project = project_i)
+  b = Sys.time()
+  cat("Project", i, "/", length(projects), "-", projects[i], "- project rate bootstrapped:", b - a, "\n")
 
   # effectiveness = observed_add_boot_out$t / baseline_best_boot_out$t
   # effectiveness_list[[i]] = data.frame(project = projects[i],
@@ -280,32 +240,104 @@ for(i in seq_along(projects)) {
   #                                       eff_upper = quantile(effectiveness, probs = 0.975, na.rm = T))
 }
 
-pre_cf_c_loss_boot_df = list_rbind(pre_cf_c_loss_boot_list)
-pre_p_c_loss_boot_df = list_rbind(pre_p_c_loss_boot_list)
-post_cf_c_loss_boot_df = list_rbind(post_cf_c_loss_boot_list)
-post_p_c_loss_boot_df = list_rbind(post_p_c_loss_boot_list)
-observed_add_boot_df = list_rbind(observed_add_boot_list)
-baseline_best_boot_df = list_rbind(baseline_best_boot_list)
-baseline_loose_boot_df = list_rbind(baseline_loose_boot_list)
-baseline_lagged_boot_df = list_rbind(baseline_lagged_boot_list)
+additionality_boot_df = list_rbind(additionality_boot_list)
+ante_project_boot_df = list_rbind(ante_project_boot_list)
+ante_region_boot_df = list_rbind(ante_region_boot_list)
 
-append_result = T
-write.table(pre_cf_c_loss_boot_df, paste0(out_path, "_pre_cf_c_loss.csv"), sep = ",",
-            col.names = !file.exists(paste0(out_path, "_pre_cf_c_loss.csv")), row.names = F, append = append_result)
-write.table(pre_p_c_loss_boot_df, paste0(out_path, "_pre_p_c_loss.csv"), sep = ",",
-            col.names = !file.exists(paste0(out_path, "_pre_p_c_loss.csv")), row.names = F, append = append_result)
-write.table(post_cf_c_loss_boot_df, paste0(out_path, "_post_cf_c_loss.csv"), sep = ",",
-            col.names = !file.exists(paste0(out_path, "_post_cf_c_loss.csv")), row.names = F, append = append_result)
-write.table(post_p_c_loss_boot_df, paste0(out_path, "_post_p_c_loss.csv"), sep = ",",
-            col.names = !file.exists(paste0(out_path, "_post_p_c_loss.csv")), row.names = F, append = append_result)
-write.table(observed_add_boot_df, paste0(out_path, "_observed_add.csv"), sep = ",",
-            col.names = !file.exists(paste0(out_path, "_observed_add.csv")), row.names = F, append = append_result)
-write.table(baseline_best_boot_df, paste0(out_path, "_baseline_best_boot.csv"), sep = ",",
-            col.names = !file.exists(paste0(out_path, "_baseline_best_boot.csv")), row.names = F, append = append_result)
-write.table(baseline_loose_boot_df, paste0(out_path, "_baseline_loose_boot.csv"), sep = ",",
-            col.names = !file.exists(paste0(out_path, "_baseline_loose_boot.csv")), row.names = F, append = append_result)
-write.table(baseline_lagged_boot_df, paste0(out_path, "_baseline_lagged_new_boot.csv"), sep = ",",
-            col.names = !file.exists(paste0(out_path, "_baseline_lagged_new_boot.csv")), row.names = F, append = append_result)
+write.csv(additionality_boot_df, paste0(out_path, "_boot_additionality.csv"), row.names = F)
+write.csv(ante_project_boot_df, paste0(out_path, "_boot_project_closs_rate.csv"), row.names = F)
+write.csv(ante_region_boot_df, paste0(out_path, "_boot_regional_closs_rate.csv"), row.names = F)
+
+
+# D. Compare hybrid forecasts made from different intervals ----
+additionality_boot_df = read.csv(paste0(out_path, "_boot_additionality.csv"), header = T)
+ante_project_boot_df = read.csv(paste0(out_path, "_boot_project_closs_rate.csv"), header = T)
+ante_region_boot_df = read.csv(paste0(out_path, "_boot_regional_closs_rate.csv"), header = T)
+
+additionality_boot_list = group_split(additionality_boot_df, project)
+ante_project_boot_list = group_split(ante_project_boot_df, project)
+ante_region_boot_list = group_split(ante_region_boot_df, project)
+
+additionality_boot_rel = lapply(seq_along(projects), function(i) {
+  additionality_boot_list[[i]] %<>%
+    mutate(year = year - t0_vec[i])
+}) %>%
+  list_rbind()
+
+ante_project_boot_rel = lapply(seq_along(projects), function(i) {
+  ante_project_boot_list[[i]] %<>%
+    mutate(year = year - t0_vec[i])
+}) %>%
+  list_rbind()
+
+ante_region_boot_rel = lapply(seq_along(projects), function(i) {
+  ante_region_boot_list[[i]] %<>%
+    mutate(year = year - t0_vec[i])
+}) %>%
+  list_rbind()
+
+forecast_df = data.frame(year = numeric(), forecast = numeric(), observed = numeric(), project = numeric())
+for(i in -10:-1) {
+  for(j in -10:-1) {
+    for(k in seq_along(projects)) {
+      project_k = projects[k]
+      rate_project = ante_project_boot_rel %>%
+        filter(year == i & project == project_k) %>%
+        pull(mean)
+      rate_region = ante_region_boot_rel %>%
+        filter(year == j & project == project_k) %>%
+        pull(mean)
+
+      forecast = (rate_project ^ (9:0) * rate_region ^ (0:9)) ^ (1 / 10)
+      observed = additionality_boot_rel %>%
+        filter(year <= 10 & project == project_k) %>%
+        pull(mean)
+      if(length(observed) < 10) observed = c(observed, rep(NA, 10 - length(observed)))
+
+      forecast_df_i = data.frame(project_used = i, region_used = j, project = project_k,
+                                 year = 1:10, forecast = forecast, observed = observed[1:10])
+      forecast_df = rbind(forecast_df, forecast_df_i)
+    }
+    cat("Forecast from project rate in year", i, "and regional rate in year", j, "done\n")
+  }
+}
+
+forecast_summ = forecast_df %>%
+  group_by(project_used, region_used, year) %>%
+  summarise(mae = mean(abs(forecast - observed), na.rm = T),
+            bias = mean(forecast - observed, na.rm = T),
+            gof = GoF(observed, forecast),
+            r2 = summary(lm(observed ~ forecast))$r.squared)
+  ungroup(year) %>%
+  summarise(mean_mae = mean(mae, na.rm = T),
+            mean_bias = mean(bias, na.rm = T),
+            mean_gof = mean(gof, na.rm = T),
+            mean_r2 = mean(r2, na.rm = T))
+
+write.csv(forecast_df, paste0(out_path, "_forecast.csv"), row.names = F)
+write.csv(forecast_summ, paste0(out_path, "_forecast_performance.csv"), row.names = F)
+
+GoF = function(obs, pred) {
+  sse = sum((obs - pred) ^ 2, na.rm = T)
+  sst = sum((obs - mean(obs, na.rm = T)) ^ 2, na.rm = T)
+  if(sst != 0) {
+    return(1 - sse / sst)
+  } else {
+    return(NA)
+  }
+}
+
+aaa = filter(forecast_df, project_used == -10 & region_used == -10 & year == 10)
+GoF(aaa$observed, aaa$forecast)
+maxval = max(aaa$forecast, aaa$observed, na.rm = T)
+ggplot(data = aaa) +
+  geom_point(aes(x = forecast, y = observed)) +
+  geom_abline(intercept = 0, slope = 1) +
+  scale_x_continuous(limits = c(0, maxval)) +
+  scale_y_continuous(limits = c(0, maxval)) +
+  theme_bw()
+
+ggsave(paste0(out_path, "_test.png"))
 
 
 # D. Generate results ----

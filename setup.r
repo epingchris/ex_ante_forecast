@@ -19,10 +19,10 @@
 rm(list = ls())
 
 #Load packages
-library(tidyverse) #ggplot2, dplyr, stringr, plotPlacebo/plotBaseline.r: tibble to store labels with bquote()
+library(tidyverse) #stringr::str_subset used in FindFiles.r, dplyr used throughout, tibble to store labels with bquote()
 library(magrittr) #pipe operators
-library(units) #units::set_units
-library(sf) #sf::st_area; runs on GDAL 3.10
+library(units) #set_units()
+library(sf) #st_drop_geometry() (runs on GDAL 3.10)
 
 source("FindFiles.r") #wrapper function to search files or folders based on inclusion/exclusion keywords
 

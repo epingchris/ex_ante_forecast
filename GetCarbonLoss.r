@@ -30,7 +30,7 @@ GetCarbonLoss = function(pixels, t0, area_ha, area_adj_ratio, cdens, adjustArea 
     summarise(carbon_density = sum(carbon_density, na.rm = T)) %>%
     ungroup() %>%
     mutate(pair = pair) %>%
-    dplyr::select(!geometry)
+    sf::st_drop_geometry()
 
   return(carbon_series)
 }
