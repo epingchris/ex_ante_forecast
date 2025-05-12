@@ -4,24 +4,17 @@ rm(list = ls())
 #Load packages
 library(tidyverse) #ggplot2, dplyr, and stringr used in plotPlacebo/plotBaseline.r: tibble to store labels with bquote()
 library(magrittr) #pipe operators
-library(sf) #st_drop_geometry() used in GetCarbonLoss.r (runs on GDAL 3.10)
-library(arrow) #read_parquet()
-library(MatchIt) #matchit(), used in the customised function AssessBalance()
+#library(sf) #st_drop_geometry() used in GetCarbonLoss.r (runs on GDAL 3.10)
+#library(arrow) #read_parquet()
+#library(MatchIt) #matchit(), used in the customised function AssessBalance()
 library(boot) #boot
 library(scales) #trans_break
 library(Metrics) #CalcError.r: rmse, mae
 library(patchwork)
-#library(units) #units::set_units
-#library(pryr) #pryr::object_size
-#library(parallel) #parallel::mclapply
 
 options(dplyr.summarise.inform = F) #remove dplyr summarise grouping message because it prints a lot
 
 #Load pre-defined functions
-source("FindFiles.r") #wrapper function to search files or folders based on inclusion/exclusion keywords
-source("ReformatPixels.r") #wrapper function to reformat column names of data frame of matched pixels
-source("AssessBalance.r") #function to assess matching balance
-source("GetCarbonLoss.r") #function to generate time series of annual change in project-level average carbon density
 source("BootOut.r")
 source("CalcError.r")
 source("plotPlacebo.r")
@@ -59,13 +52,8 @@ source("plotBaseline.r")
 # So that I can retrieve country and t0 information from the the proj_info data frame
 #10. out_path: absolute paths of the directory where outputs are to be saved; include file prefix if desired
 
-
-# A. Read input ----
-
 analysis_type = "ongoing"
-in_path = paste0("/maps/epr26/ex_ante_forecast_out/out_", analysis_type) #path of setup script output
-project_dir = "/maps/epr26/tmf_pipe_out/" #path to directories containing implementation outputs
-lagged_dir = "/maps/epr26/tmf_pipe_out_lagged/" #path to directories containing implementation outputs (lagged matching)
+in_path = paste0("/maps/epr26/ex_ante_forecast_out/out_", analysis_type) #where outputs are stored
 project_var = read.csv(paste0(in_path, "_project_var.csv"), header = T)
 projects = project_var$ID
 t0_vec = project_var$t0
@@ -75,184 +63,12 @@ cdens_list = project_var %>%
   pivot_longer(cdens_1:cdens_6, names_to = "land.use.class", names_prefix = "cdens_", values_to = "carbon.density") %>%
   split(f = .$ID)
 
-#Retrieve input paths needed for the analysis
-project_out_dirs = paste0(project_dir, projects)
-k_paths = rep(NA, length(projects))
-m_paths = rep(NA, length(projects))
-for(i in seq_along(projects)) {
-  k_paths[i] = FindFiles(project_out_dirs[i], "k.parquet", full = T)
-  m_paths[i] = FindFiles(project_out_dirs[i], "matches.parquet", full = T)
-}
-
 fig_path = paste0("/maps/epr26/ex_ante_forecast_out/out_") #where figures are stored
-out_path = paste0("/maps/epr26/ex_ante_forecast_out/out_", analysis_type) #where outputs are stored
 
-
-# B. Get ex post additionality, project and regional carbon loss rates ----
-for(i in seq_along(projects)) {
-  t0 = t0_vec[i]
-  luc_t_20 = paste0("luc_", t0_vec[i] - 20)
-  luc_t_10 = paste0("luc_", t0_vec[i] - 10)
-  luc_t0 = paste0("luc_", t0_vec[i])
-  area_ha = area_ha_vec[i]
-  cdens = cdens_list[[i]]
-  pair_dir = paste0(project_out_dirs[i], "/pairs/")
-
-  a = Sys.time()
-  #find paths to match and unmatached points in each sampled pairs
-  pair_paths = FindFiles(pair_dir, include = ".parquet", full = T)
-  matched_paths = pair_paths %>% str_subset("matchless", negate = T)
-  matchless_paths = pair_paths %>% str_subset("matchless")
-
-  if(length(matched_paths) == 0) {
-    cat("No matches\n")
-    closs_df = NULL
-    expost_add = NULL
-    closs_project = NULL
-  } else {
-    pairs_out = lapply(seq_along(matched_paths), function(j) {
-      pair_start = Sys.time()
-
-      matched_path = matched_paths[j]
-      matchless_path = matchless_paths[j]
-
-      pairs = read_parquet(matched_path) %>%
-        dplyr::select(-dplyr::ends_with(c("_x", "_y", "_trt", "_cluster")))
-      unmatched_pairs = read_parquet(matchless_path) %>%
-        dplyr::select(-dplyr::ends_with(c("_x", "_y", "_trt", "_cluster")))
-
-      #calculate proportion of unmatched pixels, used to adjust the area represented by sample: is this still necessary?
-      area_adj_ratio = nrow(pairs) / (nrow(pairs) + nrow(unmatched_pairs))
-
-      pixels_cf = ReformatPixels(in_df = pairs, prefix = "s_", t0 = t0, treatment = "counterfactual", pair = j)
-      pixels_p = ReformatPixels(in_df = pairs, prefix = "k_", t0 = t0, treatment = "project", pair = j)
-      pixels_matched = rbind(pixels_cf, pixels_p)
-
-      #assess matching balance
-      balance_assessment = AssessBalance(pixels_matched, t0 = t0)
-
-      #retrieve carbon time series for project and matched counterfactual
-      carbon_cf = GetCarbonLoss(pixels_cf, t0, area_ha, area_adj_ratio, cdens, pair = j)
-      carbon_p = GetCarbonLoss(pixels_p, t0, area_ha, area_adj_ratio, cdens, pair = j)
-
-      pair_end = Sys.time()
-      cat(j, ":", pair_end - pair_start, "\n")
-
-      return(list(carbon_cf = carbon_cf, carbon_p = carbon_p,
-                  pixels_matched = pixels_matched, area_adj_ratio = area_adj_ratio,
-                  balance_assessment = balance_assessment))
-    })
-  }
-
-  b = Sys.time()
-  cat("Project", i, "/", length(projects), "-", projects[i], "- project carbon loss :", b - a, "\n")
-
-  a = Sys.time()
-  setM = read_parquet(m_paths[i])
-  if(nrow(setM) > 250000) setM = setM[sample(nrow(setM), 250000), ]
-  pixels_region = ReformatPixels(in_df = setM, prefix = "", t0 = t0, treatment = "region", pair = 1)
-
-  #retrieve carbon time series for surrounding region
-  closs_region = GetCarbonLoss(pixels_region, t0, area_ha, area_adj_ratio = 1, cdens, pair = 1)
-  b = Sys.time()
-  cat("Project", i, "/", length(projects), "-", projects[i], "- regional carbon loss :", b - a, "\n")
-
-  carbon_cf = lapply(pairs_out, function(x) x$carbon_cf) %>%
-    list_rbind() %>%
-    mutate(treatment = "counterfactual")
-
-  carbon_p = lapply(pairs_out, function(x) x$carbon_p) %>%
-    list_rbind() %>%
-    mutate(treatment = "project")
-
-  carbon_matched = rbind(carbon_cf, carbon_p) %>%
-    pivot_wider(values_from = "carbon_density", names_from = "treatment")
-  tmax = max(carbon_matched$year)
-
-  #calculate ex post annual per-area additionality
-  additionality = carbon_matched %>%
-    filter(year >= t0) %>%
-    group_by(pair) %>%
-    mutate(diff_cf = first(counterfactual) - counterfactual,
-           diff_p = first(project) - project,
-           additionality_whole = diff_cf - diff_p,
-           additionality_annual = exp(log(additionality_whole) / (year - t0)))
-
-  #calculate ex ante within-project annual per-area carbon loss rates
-  ante_project = carbon_matched %>%
-    filter(year <= t0) %>%
-    group_by(pair) %>%
-    mutate(closs = project - last(project),
-           closs_annual = exp(log(closs) / (t0 - year)))
-
-  #calculate ex ante regional annual per-area carbon loss rates
-  ante_region = closs_region %>%
-    filter(year <= t0) %>%
-    group_by(pair) %>%
-    mutate(closs = carbon_density - last(carbon_density),
-           closs_annual = exp(log(closs) / (t0 - year))) %>%
-    mutate(closs_annual = ifelse(closs_annual >= 0, closs_annual, NA))
-
-  write.csv(additionality, paste0(out_path, "_additionality_", projects[i], ".csv"), row.names = F)
-  write.csv(ante_project, paste0(out_path, "_project_closs_rate_", projects[i], ".csv"), row.names = F)
-  write.csv(ante_region, paste0(out_path, "_regional_closs_rate_", projects[i], ".csv"), row.names = F)
-}
-
-
-# C. Bootstrap outcomes ----
-additionality_boot_list = vector("list", length(projects))
-ante_project_boot_list = vector("list", length(projects))
-ante_region_boot_list = vector("list", length(projects))
-
-for(i in seq_along(projects)) {
-  t0 = t0_vec[i]
-  project_i = projects[i]
-  additionality = read.csv(paste0(out_path, "_additionality_", projects[i], ".csv"), header = T)
-  ante_project = read.csv(paste0(out_path, "_project_closs_rate_", projects[i], ".csv"), header = T)
-  ante_region = read.csv(paste0(out_path, "_regional_closs_rate_", projects[i], ".csv"), header = T)
-  tmax = max(additionality$year)
-
-  #bootstrap ex post additionality
-  a = Sys.time()
-  additionality_boot_list[[i]] = BootOut(in_df = additionality, column = "additionality_annual", from = t0 + 1, to = tmax) %>%
-    mutate(project = project_i)
-  b = Sys.time()
-  cat("Project", i, "/", length(projects), "-", projects[i], "- additionality bootstrapped:", b - a, "\n")
-
-  #bootstrap ex ante project carbon loss rate
-  a = Sys.time()
-  ante_project_boot_list[[i]] = BootOut(in_df = ante_project, column = "closs_annual", from = t0 - 10, to = t0 - 1) %>%
-    mutate(project = project_i)
-  b = Sys.time()
-  cat("Project", i, "/", length(projects), "-", projects[i], "- project rate bootstrapped:", b - a, "\n")
-
-  #bootstrap ex ante regional carbon loss rate
-  a = Sys.time()
-  ante_region_boot_list[[i]] = BootOut(in_df = ante_region, column = "closs_annual", from = t0 - 10, to = t0 - 1) %>%
-    mutate(project = project_i)
-  b = Sys.time()
-  cat("Project", i, "/", length(projects), "-", projects[i], "- project rate bootstrapped:", b - a, "\n")
-
-  # effectiveness = observed_add_boot_out$t / baseline_best_boot_out$t
-  # effectiveness_list[[i]] = data.frame(project = projects[i],
-  #                                       eff = mean(effectiveness, na.rm = T),
-  #                                       eff_lower = quantile(effectiveness, probs = 0.025, na.rm = T),
-  #                                       eff_upper = quantile(effectiveness, probs = 0.975, na.rm = T))
-}
-
-additionality_boot_df = list_rbind(additionality_boot_list)
-ante_project_boot_df = list_rbind(ante_project_boot_list)
-ante_region_boot_df = list_rbind(ante_region_boot_list)
-
-write.csv(additionality_boot_df, paste0(out_path, "_boot_additionality.csv"), row.names = F)
-write.csv(ante_project_boot_df, paste0(out_path, "_boot_project_closs_rate.csv"), row.names = F)
-write.csv(ante_region_boot_df, paste0(out_path, "_boot_regional_closs_rate.csv"), row.names = F)
-
-
-# D. Compare hybrid forecasts made from different intervals ----
-additionality_boot_df = read.csv(paste0(out_path, "_boot_additionality.csv"), header = T)
-ante_project_boot_df = read.csv(paste0(out_path, "_boot_project_closs_rate.csv"), header = T)
-ante_region_boot_df = read.csv(paste0(out_path, "_boot_regional_closs_rate.csv"), header = T)
+#Compare hybrid forecasts made from different intervals ----
+additionality_boot_df = read.csv(paste0(in_path, "_boot_additionality.csv"), header = T)
+ante_project_boot_df = read.csv(paste0(in_path, "_boot_project_closs_rate.csv"), header = T)
+ante_region_boot_df = read.csv(paste0(in_path, "_boot_regional_closs_rate.csv"), header = T)
 
 additionality_boot_list = group_split(additionality_boot_df, project)
 ante_project_boot_list = group_split(ante_project_boot_df, project)
@@ -288,7 +104,7 @@ for(i in -10:-1) {
         filter(year == j & project == project_k) %>%
         pull(mean)
 
-      forecast = (rate_project ^ (9:0) * rate_region ^ (0:9)) ^ (1 / 10)
+      forecast = ((rate_project ^ (9:0)) * (rate_region ^ (0:9))) ^ (1 / 10)
       observed = additionality_boot_rel %>%
         filter(year <= 10 & project == project_k) %>%
         pull(mean)
@@ -302,6 +118,17 @@ for(i in -10:-1) {
   }
 }
 
+GoF = function(obs, pred) {
+  sse = sum((obs - pred) ^ 2, na.rm = T)
+  sst = sum((obs - mean(obs, na.rm = T)) ^ 2, na.rm = T)
+  if(sst != 0) {
+    return(1 - sse / sst)
+  } else {
+    return(NA)
+  }
+}
+
+#summarise across projects
 forecast_summ = forecast_df %>%
   group_by(project_used, region_used, year) %>%
   summarise(mae = mean(abs(forecast - observed), na.rm = T),
@@ -314,18 +141,108 @@ forecast_summ = forecast_df %>%
             mean_gof = mean(gof, na.rm = T),
             mean_r2 = mean(r2, na.rm = T))
 
+#use GAM to look at how forecast r2 changes with forecasting parameters
+forecast_gam = mgcv::gam(r2 ~ s(project_used, bs = "tp", k = 10) +
+                              s(region_used, bs = "tp", k = 10) +
+                              s(year, bs = "tp", k = 10), data = forecast_summ)
+gam.check(forecast_gam)
+summary(forecast_gam)
+AIC(forecast_gam)
+
+aaa = visreg(forecast_gam, "project_used", type = "conditional", partial = T, jitter = T, gg = T) +
+    scale_x_continuous(breaks = c(-10, -5, -1)) +
+    labs(title = "Project carbon loss",
+         x = "Interval start (year)",
+         y = "Partial effect") +
+    theme_bw() +
+    theme(panel.grid = element_blank(),
+          plot.title = element_text(size = 22, hjust = 0.5),
+          axis.title = element_text(size = 20),
+          axis.text = element_text(size = 18))
+bbb = visreg(forecast_gam, "region_used", type = "conditional", partial = T, jitter = T, gg = T) +
+    scale_x_continuous(breaks = c(-10, -5, -1)) +
+    labs(title = "Regional carbon loss",
+         x = "Interval start (year)",
+         y = "Partial effect") +
+    theme_bw() +
+    theme(panel.grid = element_blank(),
+          plot.title = element_text(size = 22, hjust = 0.5),
+          axis.title = element_text(size = 20),
+          axis.text = element_text(size = 18))
+ccc = visreg(forecast_gam, "year", type = "conditional", partial = T, jitter = T, gg = T) +
+    scale_x_continuous(breaks = c(1, 5, 10)) +
+    labs(title = "Effect of forecasted interval",
+         x = "Interval end (year)",
+         y = "Partial effect") +
+    theme_bw() +
+    theme(panel.grid = element_blank(),
+          plot.title = element_text(size = 24, hjust = 0.5),
+          axis.title = element_text(size = 20),
+          axis.text = element_text(size = 18))
+
+title_forecasting = ggplot() +
+    ggtitle("Effect of forecasting interval chosen to estimate:") +
+    theme_void() + theme(plot.title = element_text(size = 24, hjust = 0.5, margin = margin(t = 10)))
+
+design = "AAAAAAAAAA
+          BBBBBBBBBB
+          ##CCCCC###"
+
+plot_forecasting = (aaa + bbb) +
+    plot_layout(axis_titles = "collect_y")
+
+(plot_all = title_forecasting / plot_forecasting / ccc +
+    plot_layout(design = design, heights = c(0.02, 1, 1)))
+ggsave(plot_all, filename = paste0(fig_path, "forecast_summ_gam.png"), width = 30, height = 30, unit = "cm")
+
+
+@@@
+#look at how forecast r2 changes with forecasting parameters
+ggplot(data = forecast_summ) +
+  geom_point(aes(x = year, y = r2, col = region_used)) +
+  facet_grid(cols = vars(project_used)) +
+  scale_color_gradient(low = "darkred", high = "pink") +
+  scale_x_continuous(breaks = c(1, 5, 10), labels = c(1, 5, 10)) +
+  theme_bw() +
+  theme(axis.title = element_text(size = 18),
+        axis.text = element_text(size = 16),
+        panel.grid = element_blank())
+ggsave(paste0(fig_path, "forecast_1_r2_vs_project_used.png"),
+       width = 30, height = 10, unit = "cm")
+
+ggplot(data = forecast_summ) +
+  geom_point(aes(x = year, y = r2, col = project_used)) +
+  facet_grid(cols = vars(region_used)) +
+  scale_color_gradient(low = "blue", high = "lightblue") +
+  theme_bw() +
+  theme(axis.title = element_text(size = 20),
+        axis.text = element_text(size = 18))
+ggsave(paste0(fig_path, "forecast_2_r2_vs_region_used.png"),
+       width = 15, height = 5, unit = "cm")
+
+ggplot(data = forecast_summ) +
+  geom_point(aes(x = project_used, y = r2, col = region_used)) +
+  facet_grid(cols = vars(year)) +
+  scale_color_gradient(low = "red", high = "pink") +
+  theme_bw() +
+  theme(axis.title = element_text(size = 20),
+        axis.text = element_text(size = 18))
+ggsave(paste0(fig_path, "forecast_3_r2_vs_year.png"),
+       width = 15, height = 5, unit = "cm")
+
+ggplot(data = forecast_summ) +
+  geom_point(aes(x = year, y = r2)) +
+  theme_bw() +
+  theme(axis.title = element_text(size = 20),
+        axis.text = element_text(size = 18))
+ggsave(paste0(fig_path, "forecast_4_r2_vs_year_aggregated.png"),
+       width = 15, height = 5, unit = "cm")
+
 write.csv(forecast_df, paste0(out_path, "_forecast.csv"), row.names = F)
 write.csv(forecast_summ, paste0(out_path, "_forecast_performance.csv"), row.names = F)
 
-GoF = function(obs, pred) {
-  sse = sum((obs - pred) ^ 2, na.rm = T)
-  sst = sum((obs - mean(obs, na.rm = T)) ^ 2, na.rm = T)
-  if(sst != 0) {
-    return(1 - sse / sst)
-  } else {
-    return(NA)
-  }
-}
+
+
 
 aaa = filter(forecast_df, project_used == -10 & region_used == -10 & year == 10)
 GoF(aaa$observed, aaa$forecast)
