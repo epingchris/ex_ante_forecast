@@ -52,6 +52,7 @@ source("plotBaseline.r")
 # So that I can retrieve country and t0 information from the the proj_info data frame
 #10. out_path: absolute paths of the directory where outputs are to be saved; include file prefix if desired
 
+# Load data ----
 analysis_type = "ongoing"
 in_path = paste0("/maps/epr26/ex_ante_forecast_out/out_", analysis_type) #where outputs are stored
 project_var = read.csv(paste0(in_path, "_project_var.csv"), header = T)
@@ -64,8 +65,8 @@ cdens_list = project_var %>%
   split(f = .$ID)
 
 fig_path = paste0("/maps/epr26/ex_ante_forecast_out/out_") #where figures are stored
+out_path = in_path
 
-#Compare hybrid forecasts made from different intervals ----
 additionality_boot_df = read.csv(paste0(in_path, "_boot_additionality.csv"), header = T)
 ante_project_boot_df = read.csv(paste0(in_path, "_boot_project_closs_rate.csv"), header = T)
 ante_region_boot_df = read.csv(paste0(in_path, "_boot_regional_closs_rate.csv"), header = T)
@@ -74,6 +75,7 @@ additionality_boot_list = group_split(additionality_boot_df, project)
 ante_project_boot_list = group_split(ante_project_boot_df, project)
 ante_region_boot_list = group_split(ante_region_boot_df, project)
 
+#Express year in relative terms to project start
 additionality_boot_rel = lapply(seq_along(projects), function(i) {
   additionality_boot_list[[i]] %<>%
     mutate(year = year - t0_vec[i])
@@ -92,11 +94,14 @@ ante_region_boot_rel = lapply(seq_along(projects), function(i) {
 }) %>%
   list_rbind()
 
-forecast_df = data.frame(year = numeric(), forecast = numeric(), observed = numeric(), project = numeric())
+# A. Generate forecasts from different intervals ----
+forecast_df = data.frame(project = numeric(), year = numeric(), forecast = numeric(), observed = numeric())
 for(i in -10:-1) {
   for(j in -10:-1) {
     for(k in seq_along(projects)) {
       project_k = projects[k]
+
+      #simple forecasts using project or regional rates
       rate_project = ante_project_boot_rel %>%
         filter(year == i & project == project_k) %>%
         pull(mean)
@@ -104,15 +109,17 @@ for(i in -10:-1) {
         filter(year == j & project == project_k) %>%
         pull(mean)
 
-      forecast = ((rate_project ^ (9:0)) * (rate_region ^ (0:9))) ^ (1 / 10)
+      #hybrid forecasts using project and regional rates
+      forerate_hybrid = ((rate_project ^ (9:0)) * (rate_region ^ (0:9))) ^ (1 / 10)
       observed = additionality_boot_rel %>%
         filter(year <= 10 & project == project_k) %>%
         pull(mean)
       if(length(observed) < 10) observed = c(observed, rep(NA, 10 - length(observed)))
 
-      forecast_df_i = data.frame(project_used = i, region_used = j, project = project_k,
-                                 year = 1:10, forecast = forecast, observed = observed[1:10])
-      forecast_df = rbind(forecast_df, forecast_df_i)
+      forecast_i = data.frame(project_used = i, region_used = j, project = project_k, year = 1:10,
+                              forecast_proj = rate_project, forecast_reg = rate_region, forecast_hybr = forerate_hybrid,
+                              observed = observed[1:10])
+      forecast_df = rbind(forecast_df, forecast_i)
     }
     cat("Forecast from project rate in year", i, "and regional rate in year", j, "done\n")
   }
@@ -128,29 +135,137 @@ GoF = function(obs, pred) {
   }
 }
 
-#summarise across projects
+# Summarise across projects ----
 forecast_summ = forecast_df %>%
   group_by(project_used, region_used, year) %>%
-  summarise(mae = mean(abs(forecast - observed), na.rm = T),
-            bias = mean(forecast - observed, na.rm = T),
-            gof = GoF(observed, forecast),
-            r2 = summary(lm(observed ~ forecast))$r.squared)
-  ungroup(year) %>%
-  summarise(mean_mae = mean(mae, na.rm = T),
-            mean_bias = mean(bias, na.rm = T),
-            mean_gof = mean(gof, na.rm = T),
-            mean_r2 = mean(r2, na.rm = T))
+  summarise(r2_proj = summary(lm(observed ~ forecast_proj))$r.squared,
+            r2_reg = summary(lm(observed ~ forecast_reg))$r.squared,
+            r2_hybr = summary(lm(observed ~ forecast_hybr))$r.squared) %>%
+  ungroup()
 
-#use GAM to look at how forecast r2 changes with forecasting parameters
-forecast_gam = mgcv::gam(r2 ~ s(project_used, bs = "tp", k = 10) +
-                              s(region_used, bs = "tp", k = 10) +
-                              s(year, bs = "tp", k = 10), data = forecast_summ)
+write.csv(forecast_df, paste0(out_path, "_forecast.csv"), row.names = F)
+write.csv(forecast_summ, paste0(out_path, "_forecast_r2.csv"), row.names = F)
+
+# Plot how forecast r2 changes with forecasting parameters ----
+ggplot(data = forecast_summ) +
+  geom_boxplot(aes(x = project_used, y = r2_hybr, group = project_used)) +
+  scale_x_continuous(breaks = c(-10, -5, -1), labels = c(-10, -5, -1)) +
+  labs(title = "Forecasting interval for project carbon loss", x = "Interval start (year)", y = expression(R^2)) +
+  theme_bw() +
+  theme(plot.title = element_text(size = 24),
+        axis.title = element_text(size = 22),
+        axis.text = element_text(size = 20),
+        panel.grid = element_blank())
+ggsave(paste0(fig_path, "forecast_1_r2_vs_project_used.png"),
+       width = 30, height = 20, unit = "cm")
+
+ggplot(data = forecast_summ) +
+  geom_boxplot(aes(group = region_used, y = r2_hybr)) +
+  scale_x_continuous(breaks = c(-10, -5, -1), labels = c(-10, -5, -1)) +
+  labs(title = "Forecasting interval for regional carbon loss", x = "Interval start (year)", y = expression(R^2)) +
+  theme_bw() +
+  theme(plot.title = element_text(size = 24),
+        axis.title = element_text(size = 22),
+        axis.text = element_text(size = 20),
+        panel.grid = element_blank())
+ggsave(paste0(fig_path, "forecast_2_r2_vs_region_used.png"),
+       width = 30, height = 20, unit = "cm")
+
+ggplot(data = forecast_summ) +
+  geom_boxplot(aes(group = year, y = r2_hybr)) +
+  scale_x_continuous(breaks = c(1, 5, 10), labels = c(1, 5, 10)) +
+  labs(title = "Forecasted interval", x = "Interval end (year)", y = expression(R^2)) +
+  theme_bw() +
+  theme(plot.title = element_text(size = 24),
+        axis.title = element_text(size = 22),
+        axis.text = element_text(size = 20),
+        panel.grid = element_blank())
+ggsave(paste0(fig_path, "forecast_3_r2_vs_year.png"),
+       width = 30, height = 20, unit = "cm")
+
+
+# Use GAM to look at how forecast r2 changes with forecasting parameters ----
+forecast_gam = mgcv::gam(r2_hybr ~ s(project_used, bs = "tp", k = 10) +
+                                   s(region_used, bs = "tp", k = 10) +
+                                   s(year, bs = "tp", k = 10), data = forecast_summ)
 gam.check(forecast_gam)
 summary(forecast_gam)
 AIC(forecast_gam)
 
-aaa = visreg(forecast_gam, "project_used", type = "conditional", partial = T, jitter = T, gg = T) +
+
+# -- Digression into discrepancy in GAM visualisation --
+
+#variable "project_used": partial effects (line) and residuals (points) have the same pattern but are shifted
+gam_plot = plot(forecast_gam, scale = 0, residuals = T, select = 1, cex = 5, shift = coef(forecast_gam)[1])
+
+(gam_plot_gg = visreg(forecast_gam, "project_used", type = "conditional", partial = T, jitter = F, gg = T) +
     scale_x_continuous(breaks = c(-10, -5, -1)) +
+    scale_y_continuous(limits = c(0.15, 0.6)) +
+    labs(title = "Project carbon loss",
+         x = "Interval start (year)",
+         y = "Partial effect") +
+    theme_bw() +
+    theme(panel.grid = element_blank(),
+          plot.title = element_text(size = 22, hjust = 0.5),
+          axis.title = element_text(size = 20),
+          axis.text = element_text(size = 18)))
+
+
+#variable "year": here the predicted values dips into the negative when "year" is low, even though all observed values are positive
+gam_plot = plot(forecast_gam, scale = 0, residuals = T, select = 3, cex = 5, shift = coef(forecast_gam)[1])
+
+(gam_plot_gg = visreg(forecast_gam, "year", type = "conditional", partial = T, jitter = F, gg = T) +
+    scale_x_continuous(breaks = c(1, 5, 10)) +
+    labs(title = "Effect of forecasted interval",
+         x = "Interval end (year)",
+         y = "Partial effect") +
+    theme_bw() +
+    theme(panel.grid = element_blank(),
+          plot.title = element_text(size = 24, hjust = 0.5),
+          axis.title = element_text(size = 20),
+          axis.text = element_text(size = 18)))
+
+ddd = forecast_summ %>%
+    mutate(pred = forecast_gam$fitted.values,
+           resid = forecast_gam$residuals,
+           resid_from_plot = gam_plot[[1]]$p.resid,
+           resid_from_visreg = gam_plot_gg$data$y,
+           resid_diff = resid_from_visreg - resid_from_plot)
+ggplot(data = ddd, aes(x = project_used, y = resid)) + geom_point()
+ggplot(data = ddd, aes(x = project_used, y = resid_from_plot)) + geom_point()
+ggplot(data = ddd, aes(x = project_used, y = resid_from_plot - resid)) +
+    geom_line() +
+    scale_y_continuous(limits = c(-0.05, 0.05), breaks = c(-0.05, seq(-0.04, 0.04, by = 0.02), 0.05))
+ggplot(data = ddd, aes(x = project_used, y = resid_from_visreg)) + geom_point()
+ggplot(data = ddd, aes(x = project_used, y = resid_from_visreg - resid_from_plot)) +
+    geom_line()
+ggplot(data = ddd, aes(x = project_used, y = resid_diff)) + geom_point()
+plot(forecast_gam, scale = 0, select = 1, ylim = c(-0.05, 0.05))
+
+pred_df = data.frame(project_used = -5.5, region_used = -5.5, year = seq(1, 10, len = 500))
+pred_response = predict(forecast_gam, pred_df, type = "response")
+pred_df = pred_df %>%
+    mutate(response = pred_response)
+ggplot(data = pred_df, aes(x = year, y = response)) +
+    geom_line() +
+    scale_y_continuous(limits = c(0.15, 0.6))
+
+#residuals in gamObject (fitted GAM object): working residuals for the fitted model
+#forecast_gam$fitted.values + forecast_gam$residuals = observed values
+#p.resid in plot.gam output object: partial residuals (working residuals + partial effect)
+#the shift argument in plot.gam doesn't change output of partial residuals (p.resid)
+#visreg generates the predictions as from plot.gam and predict.gam(type = "response") and mean covariates
+#the partial residuals in visreg also follow the same pattern as p.resid in plot.gam output object, but with a difference of 0.4138:
+#my guess is that visreg includes the intercept coefficient 0.3215 but p.resid does not (even though it is included on the plot due to the shift argument),
+#but removing the intercept coefficient leaves the difference of 0.09237 (which seems to be the gap shown on the graphs)
+#where does this come from?
+
+# -- End of digression --
+
+# Plot partial effects of fitted GAM (ignoring the digression) ----
+plot_proj = visreg(forecast_gam, "project_used", type = "conditional", partial = T, jitter = F, gg = T) +
+    scale_x_continuous(breaks = c(-10, -5, -1)) +
+    scale_y_continuous(limits = c(0.15, 0.6)) +
     labs(title = "Project carbon loss",
          x = "Interval start (year)",
          y = "Partial effect") +
@@ -159,7 +274,7 @@ aaa = visreg(forecast_gam, "project_used", type = "conditional", partial = T, ji
           plot.title = element_text(size = 22, hjust = 0.5),
           axis.title = element_text(size = 20),
           axis.text = element_text(size = 18))
-bbb = visreg(forecast_gam, "region_used", type = "conditional", partial = T, jitter = T, gg = T) +
+plot_reg = visreg(forecast_gam, "region_used", type = "conditional", partial = T, jitter = T, gg = T) +
     scale_x_continuous(breaks = c(-10, -5, -1)) +
     labs(title = "Regional carbon loss",
          x = "Interval start (year)",
@@ -169,7 +284,7 @@ bbb = visreg(forecast_gam, "region_used", type = "conditional", partial = T, jit
           plot.title = element_text(size = 22, hjust = 0.5),
           axis.title = element_text(size = 20),
           axis.text = element_text(size = 18))
-ccc = visreg(forecast_gam, "year", type = "conditional", partial = T, jitter = T, gg = T) +
+plot_year = visreg(forecast_gam, "year", type = "conditional", partial = T, jitter = T, gg = T) +
     scale_x_continuous(breaks = c(1, 5, 10)) +
     labs(title = "Effect of forecasted interval",
          x = "Interval end (year)",
@@ -184,80 +299,18 @@ title_forecasting = ggplot() +
     ggtitle("Effect of forecasting interval chosen to estimate:") +
     theme_void() + theme(plot.title = element_text(size = 24, hjust = 0.5, margin = margin(t = 10)))
 
+#use patchwork to combine plots
 design = "AAAAAAAAAA
           BBBBBBBBBB
           ##CCCCC###"
-
-plot_forecasting = (aaa + bbb) +
+plot_forecasting = (plot_proj + plot_reg) +
     plot_layout(axis_titles = "collect_y")
-
-(plot_all = title_forecasting / plot_forecasting / ccc +
+(plot_all = title_forecasting / plot_forecasting / plot_year +
     plot_layout(design = design, heights = c(0.02, 1, 1)))
-ggsave(plot_all, filename = paste0(fig_path, "forecast_summ_gam.png"), width = 30, height = 30, unit = "cm")
+ggsave(plot_all, filename = paste0(fig_path, "forecast_4_gam_summ.png"), width = 30, height = 30, unit = "cm")
 
 
-@@@
-#look at how forecast r2 changes with forecasting parameters
-ggplot(data = forecast_summ) +
-  geom_point(aes(x = year, y = r2, col = region_used)) +
-  facet_grid(cols = vars(project_used)) +
-  scale_color_gradient(low = "darkred", high = "pink") +
-  scale_x_continuous(breaks = c(1, 5, 10), labels = c(1, 5, 10)) +
-  theme_bw() +
-  theme(axis.title = element_text(size = 18),
-        axis.text = element_text(size = 16),
-        panel.grid = element_blank())
-ggsave(paste0(fig_path, "forecast_1_r2_vs_project_used.png"),
-       width = 30, height = 10, unit = "cm")
-
-ggplot(data = forecast_summ) +
-  geom_point(aes(x = year, y = r2, col = project_used)) +
-  facet_grid(cols = vars(region_used)) +
-  scale_color_gradient(low = "blue", high = "lightblue") +
-  theme_bw() +
-  theme(axis.title = element_text(size = 20),
-        axis.text = element_text(size = 18))
-ggsave(paste0(fig_path, "forecast_2_r2_vs_region_used.png"),
-       width = 15, height = 5, unit = "cm")
-
-ggplot(data = forecast_summ) +
-  geom_point(aes(x = project_used, y = r2, col = region_used)) +
-  facet_grid(cols = vars(year)) +
-  scale_color_gradient(low = "red", high = "pink") +
-  theme_bw() +
-  theme(axis.title = element_text(size = 20),
-        axis.text = element_text(size = 18))
-ggsave(paste0(fig_path, "forecast_3_r2_vs_year.png"),
-       width = 15, height = 5, unit = "cm")
-
-ggplot(data = forecast_summ) +
-  geom_point(aes(x = year, y = r2)) +
-  theme_bw() +
-  theme(axis.title = element_text(size = 20),
-        axis.text = element_text(size = 18))
-ggsave(paste0(fig_path, "forecast_4_r2_vs_year_aggregated.png"),
-       width = 15, height = 5, unit = "cm")
-
-write.csv(forecast_df, paste0(out_path, "_forecast.csv"), row.names = F)
-write.csv(forecast_summ, paste0(out_path, "_forecast_performance.csv"), row.names = F)
-
-
-
-
-aaa = filter(forecast_df, project_used == -10 & region_used == -10 & year == 10)
-GoF(aaa$observed, aaa$forecast)
-maxval = max(aaa$forecast, aaa$observed, na.rm = T)
-ggplot(data = aaa) +
-  geom_point(aes(x = forecast, y = observed)) +
-  geom_abline(intercept = 0, slope = 1) +
-  scale_x_continuous(limits = c(0, maxval)) +
-  scale_y_continuous(limits = c(0, maxval)) +
-  theme_bw()
-
-ggsave(paste0(out_path, "_test.png"))
-
-
-# D. Generate results ----
+# ---- OLD RESULTS TO BE REMOVED ----
 
 if(analysis_type == "control") {
   closs_placebo = read.csv(paste0(out_path, "_post_p_c_loss.csv"), header = T)
@@ -422,176 +475,3 @@ if(analysis_type == "ongoing") {
     col_ante / cols / plots +
     plot_layout(nrow = 3, heights = c(0.02, 0.01, 1))
   ggsave(paste0(fig_path, "figure_s4_ongoing_projects_new.png"), width = 48, height = 16, units = "in")
-
-# ---TO BE REMOVED AFTER THIS LINE--- #
-
-  summ = list_rbind(list(post_cf_c_loss_boot_df,
-                         baseline_best_boot_df,
-                         baseline_loose_boot_df,
-                         baseline_lagged_boot_df)) %>%
-    left_join(project_var["ID"], by = join_by(project == ID))
-
-  #fit LM while forcing through the origin (0, 0)
-  summ_wide = summ %>%
-    dplyr::select(type, mean, project) %>%
-    pivot_wider(names_from = "type", values_from = "mean", id_expand = T)
-  lm_best = lm(cf_c_loss ~ best - 1, data = summ_wide)
-  lm_loose = lm(cf_c_loss ~ loose - 1, data = summ_wide)
-  lm_lagged = lm(cf_c_loss ~ lagged - 1, data = summ_wide)
-
-  #calculate R2
-  r2 = c(summary(lm_best)$r.squared, summary(lm_loose)$r.squared, summary(lm_lagged)$r.squared) %>% round(., 3)
-
-  #calculate MAE
-  mae_val = c(mean(abs(summ_wide$cf_c_loss - summ_wide$best)),
-              mean(abs(summ_wide$cf_c_loss - summ_wide$loose)),
-              mean(abs(summ_wide$cf_c_loss - summ_wide$lagged), na.rm = T)) %>% round(., 2)
-
-  #non-stationarity correction factor
-  corr_fact = c(summary(lm_best)$coefficients[1],
-               summary(lm_loose)$coefficients[1],
-               summary(lm_lagged)$coefficients[1]) %>% round(., 2)
-  corr_confint = data.frame(best = as.numeric(confint(lm_best)),
-                            loose = as.numeric(confint(lm_loose)),
-                            lagged = as.numeric(confint(lm_lagged))) %>% round(., 2)
-  write.csv(data.frame(type = c("best", "loose", "lagged"), correction_factor = corr_fact), paste0(out_path, "_corr_fact.csv"))
-
-  summ_corr = list_rbind(list(post_cf_c_loss_boot_df,
-                              baseline_best_boot_df %>% mutate(across(mean:ci_upper, function(x) x * corr_fact[1])),
-                              baseline_loose_boot_df %>% mutate(across(mean:ci_upper, function(x) x * corr_fact[2])),
-                              baseline_lagged_boot_df %>% mutate(across(mean:ci_upper, function(x) x * corr_fact[3]))))
-  summ_corr = summ_corr %>%
-    left_join(project_var[c("ID")], by = join_by(project == ID))
-
-  #fit LM while forcing through the origin (0, 0)
-  summ_corr_wide = summ_corr %>%
-    dplyr::select(type, mean, project) %>%
-    pivot_wider(names_from = "type", values_from = "mean", id_expand = T)
-  lm_best_corr = lm(cf_c_loss ~ best - 1, data = summ_corr_wide)
-  lm_loose_corr = lm(cf_c_loss ~ loose - 1, data = summ_corr_wide)
-  lm_lagged_corr = lm(cf_c_loss ~ lagged - 1, data = summ_corr_wide)
-
-  #calculate MAE
-  mae_corr = c(mean(abs(summ_corr_wide$cf_c_loss - summ_corr_wide$best)),
-               mean(abs(summ_corr_wide$cf_c_loss - summ_corr_wide$loose)),
-               mean(abs(summ_corr_wide$cf_c_loss - summ_corr_wide$lagged), na.rm = T)) %>% round(., 2)
-
-  # Figure 5. show how baseline compares to counterfactual carbon loss in ongoing projects (before vs after correction)
-  p1 = plotBaseline(dat = summ, baseline_used = "best", metrics = mae_val[1])
-  p2 = plotBaseline(dat = summ, baseline_used = "loose", metrics = mae_val[2])
-  p3 = plotBaseline(dat = summ, baseline_used = "lagged", metrics = mae_val[3])
-  p4 = plotBaseline(dat = summ_corr, baseline_used = "best", metrics = c(mae_corr[1], corr_fact[1], corr_confint$best), corr = T)
-  p5 = plotBaseline(dat = summ_corr, baseline_used = "loose", metrics = c(mae_corr[2], corr_fact[2], corr_confint$loose), corr = T)
-  p6 = plotBaseline(dat = summ_corr, baseline_used = "lagged", metrics = c(mae_corr[3], corr_fact[3], corr_confint$lagged), corr = T)
-  # Create column labels
-  col1 = ggplot() + ggtitle("A. Close matching") + theme_void() + theme(plot.title = element_text(size = 40, hjust = 0.5))
-  col2 = ggplot() + ggtitle("B. Loose matching") + theme_void() + theme(plot.title = element_text(size = 40, hjust = 0.5))
-  col3 = ggplot() + ggtitle("C. Time-lagged matching") + theme_void() + theme(plot.title = element_text(size = 40, hjust = 0.5))
-
-  # Create row labels
-  row1 = ggplot() + annotate("text", x = 1, y = 0.5, label = "Before correction", angle = 270, size = 15) + theme_void()
-  row2 = ggplot() + annotate("text", x = 1, y = 0.5, label = "After correction", angle = 270, size = 15) + theme_void()
-
-  # Create r2 labels
-  r2_1 = ggplot() + annotate("text", x = 1, y = 0.5, label = bquote(R^2 * ": " * .(r2[1])), size = 10) + theme_void()
-  r2_2 = ggplot() + annotate("text", x = 1, y = 0.5, label = bquote(R^2 * ": " * .(r2[2])), size = 10) + theme_void()
-  r2_3 = ggplot() + annotate("text", x = 1, y = 0.5, label = bquote(R^2 * ": " * .(r2[3])), size = 10) + theme_void()
-
-
-  # Combine plots with labels
-  plots = (p1 + p2 + p3 + row1 + p4 + p5 + p6 + row2) +
-    plot_layout(nrow = 2, axes = "collect", axis_titles = "collect", widths = c(1, 1, 1, 0.2)) #row first
-  cols = (col1 + col2 + col3 + plot_spacer()) +
-    plot_layout(nrow = 1, widths = c(1, 1, 1, 0.2))
-  r2_lab = (r2_1 + r2_2 + r2_3 + plot_spacer()) +
-    plot_layout(nrow = 1, widths = c(1, 1, 1, 0.2))
-  plot_complete = #then column
-    cols / r2_lab / plots +
-    plot_layout(nrow = 3, heights = c(0.01, 0.05, 1))
-  ggsave(paste0(fig_path, "figure3c_control.png"), width = 7500, height = 5500, units = "px")
-  ggsave(paste0(fig_path, "figure4_ongoing.png"), width = 7500, height = 5500, units = "px")
-
-
-  # Calculate project performance ratio
-  eff_list = vector("list", length(projects))
-
-  corr_fact_mean = summary(lm_best)$coefficients[1]
-  corr_fact_se = summary(lm_best)$coefficients[2]
-
-  for(i in seq_along(projects)) {
-    area_i = area_ha_vec[i]
-    obs_post = read.csv(paste0(out_path, "_additionality_", projects[i], ".csv"), header = T) %>%
-      mutate(t_loss = t_loss / area_i,
-             c_loss = c_loss / area_i,
-             additionality = additionality / area_i) %>%
-      filter(started == T)
-    baseline_best = read.csv(paste0(out_path, "_baseline_best_", projects[i], ".csv"), header = T)
-
-    observed_add_boot = BootOut(type = "additionality", in_df = dplyr::select(obs_post, additionality))$t
-    baseline_best_boot = BootOut(type = "best", in_df = dplyr::select(baseline_best, c_loss))$t
-    corr_fact_boot = rnorm(1000, corr_fact_mean, corr_fact_se)
-    baseline_best_boot_corr = baseline_best_boot * corr_fact_boot
-
-    eff_boot = observed_add_boot / baseline_best_boot
-    eff_corr_boot = observed_add_boot / baseline_best_boot_corr
-    eff_list[[i]] = data.frame(project = projects[i],
-                               eff = mean(eff_boot, na.rm = T),
-                               eff_lower = quantile(eff_boot, 0.025, na.rm = T),
-                               eff_upper = quantile(eff_boot, 0.975, na.rm = T),
-                               eff_corr = mean(eff_corr_boot, na.rm = T),
-                               eff_corr_lower = quantile(eff_corr_boot, 0.025, na.rm = T),
-                               eff_corr_upper = quantile(eff_corr_boot, 0.975, na.rm = T))
-  }
-
-  eff_df = list_rbind(eff_list)
-  write.table(eff_df, paste0(out_path, "_effectiveness.csv"), sep = ",", row.names = F)
-
-  eff_df = read.csv(paste0(out_path, "_effectiveness.csv"), header = T) %>%
-    left_join(project_var[c("ID")], by = join_by(project == ID))
-
-  eff_plot = eff_df %>%
-    filter(eff > 0) %>%
-    arrange(eff) %>%
-    mutate(code = factor(code, levels = code))
-
-  eff_med = median(eff_plot$eff_corr)
-  median(eff_plot$eff_corr_lower)
-  median(eff_plot$eff_corr_upper)
-
-  eff_5perc = quantile(eff_plot$eff_corr, 0.05)
-  quantile(eff_plot$eff_corr_lower, 0.05)
-  quantile(eff_plot$eff_corr_upper, 0.05)
-
-  p8 = ggplot(data = eff_plot) +
-    geom_segment(aes(x = code, y = eff_corr_lower, yend = eff_corr_upper), color = "blue", linewidth = 2) +
-    geom_rect(aes(xmin = as.numeric(code) - 0.4,
-                  xmax = as.numeric(code) + 0.4,
-                  ymin = 0.1, ymax = eff_corr), fill = "lightblue") +
-    geom_text(aes(x = code, y = eff_corr * 0.85, label = code), color = "darkblue", size = 10) +
-    geom_hline(yintercept = c(eff_5perc, eff_med, 1), linetype = 3, linewidth = 1.2) +
-    scale_x_discrete(name = "", labels = NULL) +
-    scale_y_continuous(limits = c(0.1, 20),
-                       breaks = c(0.1, 0.2, 0.5, 1, 1.5, 2, 3, 5, 10, 15, 20),
-                       expand = c(0, 0),
-                       transform = scales::transform_log10()) +
-    labs(title = "",
-         x = "Project code",
-         y = "Project performance ratio") +
-    theme_bw() +
-    theme(panel.border = element_rect(color = "black", fill = NA),
-          panel.grid = element_blank(),
-          plot.title = element_text(size = 48, hjust = 0.5, margin = margin(b = 10)),
-          axis.title = element_text(size = 40),
-          axis.text = element_text(size = 36),
-          axis.title.y = element_text(margin = margin(r = 10)),
-          axis.text.y = element_text(margin = margin(r = 10)),
-          axis.ticks.x = element_blank(),
-          axis.ticks.y = element_line(linewidth = 2),
-          axis.ticks.length.y = unit(.5, "cm"),
-          legend.position = "none")
-
-  (p7 + p8) +
-    plot_layout(axes = "collect", axis_titles = "collect")
-  p8
-  ggsave(paste0(fig_path, "figure5_effectiveness_after.png"), width = 4000, height = 4000, units = "px")
-}
