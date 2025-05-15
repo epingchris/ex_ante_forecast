@@ -52,6 +52,7 @@ source("plotBaseline.r")
 # So that I can retrieve country and t0 information from the the proj_info data frame
 #10. out_path: absolute paths of the directory where outputs are to be saved; include file prefix if desired
 
+
 # Load data ----
 analysis_type = "ongoing"
 in_path = paste0("/maps/epr26/ex_ante_forecast_out/out_", analysis_type) #where outputs are stored
@@ -75,7 +76,7 @@ additionality_boot_list = group_split(additionality_boot_df, project)
 ante_project_boot_list = group_split(ante_project_boot_df, project)
 ante_region_boot_list = group_split(ante_region_boot_df, project)
 
-#Express year in relative terms to project start
+#express year in relative terms to project start
 additionality_boot_rel = lapply(seq_along(projects), function(i) {
   additionality_boot_list[[i]] %<>%
     mutate(year = year - t0_vec[i])
@@ -94,100 +95,283 @@ ante_region_boot_rel = lapply(seq_along(projects), function(i) {
 }) %>%
   list_rbind()
 
-# A. Generate forecasts from different intervals ----
-forecast_df = data.frame(project = numeric(), year = numeric(), forecast = numeric(), observed = numeric())
+
+# Generate forecasts from different intervals ----
+#simple forecasts
+forecast_prj = data.frame(project_used = numeric(), project = numeric(), year = numeric(),
+                          forecast = numeric(), observed = numeric(), type = character())
+forecast_reg = data.frame(region_used = numeric(), project = numeric(), year = numeric(),
+                          forecast = numeric(), observed = numeric(), type = character())
+for(i in -10:-1) {
+  for(k in seq_along(projects)) {
+    project_k = projects[k]
+
+    #observed rates
+    observed = additionality_boot_rel %>%
+      filter(year <= 10 & project == project_k) %>%
+      pull(mean)
+    if(length(observed) < 10) observed = c(observed, rep(NA, 10 - length(observed)))
+
+    #simple forecasts using project rates
+    rate_project = ante_project_boot_rel %>%
+      filter(year == i & project == project_k) %>%
+      pull(mean)
+    prj_i = data.frame(project_used = i, project = project_k, year = 1:10,
+                       forecast = rate_project, observed = observed[1:10], type = "project")
+    forecast_prj = rbind(forecast_prj, prj_i)
+
+    #simple forecasts using regional rates
+    rate_region = ante_region_boot_rel %>%
+      filter(year == i & project == project_k) %>%
+      pull(mean)
+    reg_i = data.frame(region_used = i, project = project_k, year = 1:10,
+                       forecast = rate_region, observed = observed[1:10], type = "region")
+    forecast_reg = rbind(forecast_reg, reg_i)
+  }
+}
+
+#hybrid forecasts
+forecast_hyb = data.frame(project_used = numeric(), region_used = numeric(), project = numeric(), year = numeric(),
+                          forecast = numeric(), observed = numeric(), type = character())
 for(i in -10:-1) {
   for(j in -10:-1) {
     for(k in seq_along(projects)) {
       project_k = projects[k]
 
-      #simple forecasts using project or regional rates
+      #observed rates
+      observed = additionality_boot_rel %>%
+        filter(year <= 10 & project == project_k) %>%
+        pull(mean)
+      if(length(observed) < 10) observed = c(observed, rep(NA, 10 - length(observed)))
+
+      #hybrid forecasts using project and regional rates
       rate_project = ante_project_boot_rel %>%
         filter(year == i & project == project_k) %>%
         pull(mean)
       rate_region = ante_region_boot_rel %>%
         filter(year == j & project == project_k) %>%
         pull(mean)
+      rate_hybrid = ((rate_project ^ (9:0)) * (rate_region ^ (0:9))) ^ (1 / 10)
 
-      #hybrid forecasts using project and regional rates
-      forerate_hybrid = ((rate_project ^ (9:0)) * (rate_region ^ (0:9))) ^ (1 / 10)
-      observed = additionality_boot_rel %>%
-        filter(year <= 10 & project == project_k) %>%
-        pull(mean)
-      if(length(observed) < 10) observed = c(observed, rep(NA, 10 - length(observed)))
-
-      forecast_i = data.frame(project_used = i, region_used = j, project = project_k, year = 1:10,
-                              forecast_proj = rate_project, forecast_reg = rate_region, forecast_hybr = forerate_hybrid,
-                              observed = observed[1:10])
-      forecast_df = rbind(forecast_df, forecast_i)
+      hyb_i = data.frame(project_used = i, region_used = j, project = project_k, year = 1:10,
+                         forecast = rate_hybrid, observed = observed[1:10], type = "hybrid")
+      forecast_hyb = rbind(forecast_hyb, hyb_i)
     }
-    cat("Forecast from project rate in year", i, "and regional rate in year", j, "done\n")
   }
 }
 
-GoF = function(obs, pred) {
-  sse = sum((obs - pred) ^ 2, na.rm = T)
-  sst = sum((obs - mean(obs, na.rm = T)) ^ 2, na.rm = T)
-  if(sst != 0) {
-    return(1 - sse / sst)
-  } else {
-    return(NA)
-  }
-}
 
-# Summarise across projects ----
-forecast_summ = forecast_df %>%
+# Summarise r2 across projects ----
+forecast_prj_summ = forecast_prj %>%
+  group_by(project_used, year) %>%
+  summarise(r2 = summary(lm(observed ~ forecast))$r.squared) %>%
+  ungroup()
+forecast_reg_summ = forecast_reg %>%
+  group_by(region_used, year) %>%
+  summarise(r2 = summary(lm(observed ~ forecast))$r.squared) %>%
+  ungroup()
+forecast_hyb_summ = forecast_hyb %>%
   group_by(project_used, region_used, year) %>%
-  summarise(r2_proj = summary(lm(observed ~ forecast_proj))$r.squared,
-            r2_reg = summary(lm(observed ~ forecast_reg))$r.squared,
-            r2_hybr = summary(lm(observed ~ forecast_hybr))$r.squared) %>%
+  summarise(r2 = summary(lm(observed ~ forecast))$r.squared) %>%
   ungroup()
 
-write.csv(forecast_df, paste0(out_path, "_forecast.csv"), row.names = F)
-write.csv(forecast_summ, paste0(out_path, "_forecast_r2.csv"), row.names = F)
+write.csv(forecast_prj, paste0(out_path, "_forecast_1_prj.csv"), row.names = F)
+write.csv(forecast_reg, paste0(out_path, "_forecast_2_reg.csv"), row.names = F)
+write.csv(forecast_hyb, paste0(out_path, "_forecast_3_hyb.csv"), row.names = F)
+write.csv(forecast_prj_summ, paste0(out_path, "_forecast_summ_1_prj.csv"), row.names = F)
+write.csv(forecast_reg_summ, paste0(out_path, "_forecast_summ_2_reg.csv"), row.names = F)
+write.csv(forecast_hyb_summ, paste0(out_path, "_forecast_summ_3_hyb.csv"), row.names = F)
 
-# Plot how forecast r2 changes with forecasting parameters ----
-ggplot(data = forecast_summ) +
-  geom_boxplot(aes(x = project_used, y = r2_hybr, group = project_used)) +
-  scale_x_continuous(breaks = c(-10, -5, -1), labels = c(-10, -5, -1)) +
-  labs(title = "Forecasting interval for project carbon loss", x = "Interval start (year)", y = expression(R^2)) +
+
+# Plot forecasting performances ----
+forecast_aggr = rbind(forecast_prj_summ %>% dplyr::select(year, r2) %>% mutate(type = "Project"),
+                      forecast_reg_summ %>% dplyr::select(year, r2) %>% mutate(type = "Region"),
+                      forecast_hyb_summ %>% dplyr::select(year, r2) %>% mutate(type = "Hybrid"))
+
+forecast_aggr_summ = forecast_aggr %>%
+  group_by(type, year) %>%
+  summarise(mean = mean(r2, na.rm = T),
+            min = min(r2, na.rm = T),
+            max = max(r2, na.rm = T),
+            lower = quantile(r2, 0.025, na.rm = T),
+            upper = quantile(r2, 0.975, na.rm = T)) %>%
+  ungroup() %>%
+  mutate(type = factor(type, levels = c("Project", "Region", "Hybrid")))
+
+axis_label_prj = expression(paste("Start of historical period for project rates (years before ", italic(t[0]), ")", sep = ""))
+axis_label_reg = expression(paste("Start of historical period for regional rates (years before ", italic(t[0]), ")", sep = ""))
+axis_label_forecast = expression(paste("End of forecasted period (years after ", italic(t[0]), ")", sep = ""))
+
+#plot overall r2 range for each type of forecasts
+ggplot(data = forecast_aggr_summ, aes(x = year, y = mean)) +
+  geom_line(aes(color = type), linewidth = 2) +
+  geom_ribbon(aes(ymin = min, ymax = max, fill = type), alpha = 0.2) +
+  scale_color_manual(values = c("#40B0A6", "#CDAC60", "#9467BD")) +
+  scale_fill_manual(values = c("#40B0A6", "#CDAC60", "#9467BD")) +
+  scale_x_continuous(breaks = 1:10, labels = 1:10) +
+  scale_y_continuous(breaks = seq(0, 0.75, 0.25), labels = seq(0, 0.75, 0.25)) +
+  labs(x = axis_label_forecast,
+       y = expression(R^2),
+       color = "Forecast type",
+       fill = "Forecast type") +
   theme_bw() +
-  theme(plot.title = element_text(size = 24),
+  theme(panel.grid = element_blank(),
+        plot.title = element_text(size = 24, hjust = 0.5),
         axis.title = element_text(size = 22),
         axis.text = element_text(size = 20),
-        panel.grid = element_blank())
-ggsave(paste0(fig_path, "forecast_1_r2_vs_project_used.png"),
-       width = 30, height = 20, unit = "cm")
+        axis.ticks = element_line(linewidth = 1),
+        axis.ticks.length = unit(0.2, "cm"),
+        legend.title = element_text(size = 22),
+        legend.text = element_text(size = 20),
+        legend.key.size = unit(1.5, "cm"))
+ggsave(paste0(fig_path, "forecast_0_overall_r2.png"),
+       width = 35, height = 30, unit = "cm")
 
-ggplot(data = forecast_summ) +
-  geom_boxplot(aes(group = region_used, y = r2_hybr)) +
-  scale_x_continuous(breaks = c(-10, -5, -1), labels = c(-10, -5, -1)) +
-  labs(title = "Forecasting interval for regional carbon loss", x = "Interval start (year)", y = expression(R^2)) +
+#Supplementary: simple forecasts using project rates
+ggplot(data = forecast_prj_summ, aes(x = project_used, y = year)) +
+  geom_tile(aes(fill = r2)) +
+  geom_text(aes(label = round(r2, 3)), color = "white", size = 6) +
+  scale_fill_gradient(limits = c(0, 0.75), breaks = seq(0, 0.75, 0.25), low = "black", high = "#40B0A6") +
+  scale_x_continuous(breaks = -10:-1, labels = 10:1, expand = c(0, 0)) +
+  scale_y_continuous(breaks = 1:10, expand = c(0, 0)) +
+  labs(title = "Project-based forecasts",
+       x = expression(paste("Start of historical period (years before ", italic(t[0]), ")", sep = "")),
+       y = expression(paste("End of forecasted period (years after ", italic(t[0]), ")", sep = "")),
+       fill = expression(R^2)) +
   theme_bw() +
-  theme(plot.title = element_text(size = 24),
+  theme(panel.grid = element_blank(),
+        panel.border = element_blank(),
+        panel.spacing = unit(0, "cm"),
+        plot.title = element_text(size = 24, hjust = 0.5),
         axis.title = element_text(size = 22),
         axis.text = element_text(size = 20),
-        panel.grid = element_blank())
-ggsave(paste0(fig_path, "forecast_2_r2_vs_region_used.png"),
-       width = 30, height = 20, unit = "cm")
+        axis.ticks = element_blank(),
+        legend.title = element_text(size = 22),
+        legend.text = element_text(size = 20),
+        legend.key.size = unit(1.5, "cm"))
+ggsave(paste0(fig_path, "forecast_1_prj.png"),
+       width = 30, height = 30, unit = "cm")
 
-ggplot(data = forecast_summ) +
-  geom_boxplot(aes(group = year, y = r2_hybr)) +
-  scale_x_continuous(breaks = c(1, 5, 10), labels = c(1, 5, 10)) +
-  labs(title = "Forecasted interval", x = "Interval end (year)", y = expression(R^2)) +
+#Supplementary: simple forecasts using regional rates
+ggplot(data = forecast_reg_summ, aes(x = region_used, y = year)) +
+  geom_tile(aes(fill = r2)) +
+  scale_fill_gradient(limits = c(0, 0.75), breaks = seq(0, 0.75, 0.25), low = "black", high = "#CDAC60") +
+  scale_x_continuous(breaks = -10:-1, labels = 10:1, expand = c(0, 0)) +
+  scale_y_continuous(breaks = 1:10, expand = c(0, 0)) +
+  geom_text(aes(label = round(r2, 3)), color = "white", size = 6) +
+  labs(title = "Region-based forecasts",
+       x = expression(paste("Start of historical period (years before ", italic(t[0]), ")", sep = "")),
+       y = expression(paste("End of forecasted period (years after ", italic(t[0]), ")", sep = "")),
+       fill = expression(R^2)) +
   theme_bw() +
-  theme(plot.title = element_text(size = 24),
+  theme(panel.grid = element_blank(),
+        panel.border = element_blank(),
+        panel.spacing = unit(0, "cm"),
+        plot.title = element_text(size = 24, hjust = 0.5),
         axis.title = element_text(size = 22),
         axis.text = element_text(size = 20),
-        panel.grid = element_blank())
-ggsave(paste0(fig_path, "forecast_3_r2_vs_year.png"),
-       width = 30, height = 20, unit = "cm")
+        axis.ticks = element_blank(),
+        legend.title = element_text(size = 22),
+        legend.text = element_text(size = 20),
+        legend.key.size = unit(1.5, "cm"))
+ggsave(paste0(fig_path, "forecast_2_reg.png"),
+       width = 30, height = 30, unit = "cm")
+
+#Supplementary: mixed forecasts using project and regional rates
+
+#average r2 over forecasted periods longer than 5 years
+forecast_hyb_summ_yr = forecast_hyb_summ %>%
+  filter(year >= 5) %>%
+  group_by(project_used, region_used) %>%
+  summarise(r2 = mean(r2, na.rm = T)) %>%
+  ungroup()
+
+#find the historical periods that give the highest average r2 (best method)
+max_r2 = forecast_hyb_summ_yr %>%
+  filter(r2 == max(r2, na.rm = T))
+#project_used = -4 and region_used = -1
+#but actually as long as project_used is not -1 and region_used is 1, performance is good
+
+ggplot(data = forecast_hyb_summ_yr, aes(x = project_used, y = region_used)) +
+  geom_tile(aes(fill = r2)) +
+  geom_tile(data = max_r2, aes(x = project_used, y = region_used, fill = r2), color = "red", linewidth = 2, alpha = 0) +
+  scale_fill_gradient(limits = c(0, 0.75), breaks = seq(0, 0.75, 0.25), low = "black", high = "#9467BD") +
+  scale_x_continuous(breaks = -10:-1, labels = 10:1, expand = c(0, 0)) +
+  scale_y_continuous(breaks = -10:-1, labels = 10:1, expand = c(0, 0)) +
+  geom_text(aes(label = round(r2, 3)), color = "white", size = 6) +
+  labs(title = "Mixed forecasts",
+      x = expression(paste("Start of historical period for project rates (years before ", italic(t[0]), ")", sep = "")),
+      y = expression(paste("Start of historical period for regional rates (years before ", italic(t[0]), ")", sep = "")),
+      fill = expression(paste("Average ", R^2, sep = ""))) +
+  theme_bw() +
+  theme(panel.grid = element_blank(),
+        panel.border = element_blank(),
+        panel.spacing = unit(0, "cm"),
+        plot.title = element_text(size = 24, hjust = 0.5),
+        axis.title = element_text(size = 22),
+        axis.text = element_text(size = 20),
+        axis.ticks = element_blank(),
+        legend.title = element_text(size = 22),
+        legend.text = element_text(size = 20),
+        legend.key.size = unit(1.5, "cm"))
+ggsave(paste0(fig_path, "forecast_3_hyb.png"),
+        width = 35, height = 30, unit = "cm")
+
+#observed vs forecasted for the best mixed forecast method
+forecast_best = forecast_hyb %>%
+  filter(project_used == max_r2$project_used & region_used == max_r2$region_used) %>%
+  mutate(ratio = observed / forecast)
+
+for(i in 5:10) {
+  best_i = filter(forecast_best, year == i)
+  lm_i = lm(observed ~ forecast, data = best_i)
+  lm_r2 = summary(lm_i)$r.squared
+  lm_coef = coef(lm_i)
+  ratio_p5 = quantile(best_i$ratio, 0.05, na.rm = T)
+  ratio_min = min(best_i$ratio, na.rm = T)
+  type_vec = c("Original", "Adjusted")
+
+  ggplot(data = best_i) +
+    geom_point(aes(x = forecast, y = observed,
+                   shape = factor("Original", levels = type_vec),
+                   size = factor("Original", levels = type_vec))) +
+    geom_point(aes(x = forecast * ratio_min, y = observed,
+                   shape = factor("Adjusted", levels = type_vec),
+                   size = factor("Adjusted", levels = type_vec))) +
+    annotate(geom = "text", x = 2.2, y = 1.0, size = 8,
+             label = bquote(paste(R^2, " = ", .(round(lm_r2, 3))))) +
+    annotate(geom = "text", x = 2.2, y = 0.8, size = 8,
+             label = bquote(paste("Observed = Forecast * ", .(round(lm_coef[2], 3)), " + ", .(round(lm_coef[1], 3))))) +
+    annotate(geom = "text", x = 2.2, y = 0.6, size = 8,
+             label = bquote(paste(Ratio[min], " = ", .(round(ratio_min, 3))))) +
+    geom_abline(intercept = 0, slope = 1, linetype = "dashed") +
+    geom_abline(intercept = lm_coef[1], slope = lm_coef[2], color = "red", linetype = "dotted") +
+    scale_shape_manual(name = "Forecast type", values = c("Original" = 20, "Adjusted" = 1)) +
+    scale_size_manual(name = "Forecast type", values = c("Original" = 2, "Adjusted" = 3)) +
+    labs(title = paste0("Forecast performance for the ", i, "-year period"),
+         x = "Forecast",
+         y = "Observed") +
+    scale_x_continuous(limits = c(0, 3.5), breaks = seq(0, 3.5, 0.5)) +
+    scale_y_continuous(limits = c(0, 3.5), breaks = seq(0, 3.5, 0.5)) +
+    theme_bw() +
+    theme(panel.grid = element_blank(),
+          panel.spacing = unit(0, "cm"),
+          plot.title = element_text(size = 28, hjust = 0.5),
+          axis.title = element_text(size = 24),
+          axis.text = element_text(size = 20),
+          axis.ticks = element_blank(),
+          legend.title = element_text(size = 24),
+          legend.text = element_text(size = 20),
+          legend.key.size = unit(1.5, "cm"))
+  ggsave(paste0(fig_path, "forecast_4_vs_obs_over_", i, "_years.png"),
+          width = 35, height = 30, unit = "cm")
+}
 
 
-# Use GAM to look at how forecast r2 changes with forecasting parameters ----
-forecast_gam = mgcv::gam(r2_hybr ~ s(project_used, bs = "tp", k = 10) +
-                                   s(region_used, bs = "tp", k = 10) +
-                                   s(year, bs = "tp", k = 10), data = forecast_summ)
+# Supplementary: se GAM to look at how forecast r2 changes with forecasting parameters ----
+forecast_gam = mgcv::gam(r2 ~ s(project_used, bs = "tp", k = 10) +
+                              s(region_used, bs = "tp", k = 10) +
+                              s(year, bs = "tp", k = 10), data = forecast_hyb_summ)
 gam.check(forecast_gam)
 summary(forecast_gam)
 AIC(forecast_gam)
@@ -307,171 +491,4 @@ plot_forecasting = (plot_proj + plot_reg) +
     plot_layout(axis_titles = "collect_y")
 (plot_all = title_forecasting / plot_forecasting / plot_year +
     plot_layout(design = design, heights = c(0.02, 1, 1)))
-ggsave(plot_all, filename = paste0(fig_path, "forecast_4_gam_summ.png"), width = 30, height = 30, unit = "cm")
-
-
-# ---- OLD RESULTS TO BE REMOVED ----
-
-if(analysis_type == "control") {
-  closs_placebo = read.csv(paste0(out_path, "_post_p_c_loss.csv"), header = T)
-  closs_ante_regional = read.csv(paste0(out_path, "_baseline_loose_boot.csv"), header = T)
-  closs_ante_project = read.csv(paste0(out_path, "_baseline_best_boot.csv"), header = T)
-  closs_ante_historical = read.csv(paste0(out_path, "_baseline_lagged_new_boot.csv"), header = T)
-  closs_post_counterfactual = read.csv(paste0(out_path, "_post_cf_c_loss.csv"), header = T)
-
-  # Create plots
-  out_regional = plotPlacebo(dat = rbind(closs_placebo, closs_ante_regional),
-                             label_to_x = "p_c_loss", col = "#006CD1")
-  out_project = plotPlacebo(dat = rbind(closs_placebo, closs_ante_project),
-                            label_to_x = "p_c_loss", col = "#40B0A6")
-  out_historical = plotPlacebo(dat = rbind(closs_placebo, closs_ante_historical),
-                               label_to_x = "p_c_loss", col = "#CDAC60")
-  out_post = plotPlacebo(dat = rbind(closs_placebo, closs_post_counterfactual),
-                         label_to_x = "p_c_loss")
-
-  p_regional = out_regional$p
-  p_project = out_project$p +
-    theme(axis.title.y = element_blank(), axis.text.y = element_blank(), axis.ticks.y = element_blank())
-  p_historical = out_historical$p +
-    theme(axis.title.y = element_blank(), axis.text.y = element_blank(), axis.ticks.y = element_blank())
-  p_post = out_post$p
-
-  # Create column labels
-  col_ante = ggplot() +
-    ggtitle(bquote("A." ~ italic("Ex ante") ~ "forecasts")) +
-    theme_void() + theme(plot.title = element_text(size = 64, hjust = 0.5, margin = margin(t = 10)))
-  col_post = ggplot() +
-    ggtitle(bquote("B." ~ italic("Ex post") ~ "match")) +
-    theme_void() + theme(plot.title = element_text(size = 64, hjust = 0.5, margin = margin(t = 10)))
-
-  col_regional = ggplot() +
-    ggtitle("Recent regional") +
-    theme_void() + theme(plot.title = element_text(size = 60, hjust = 0.5, margin = margin(t = 10)))
-  col_project = ggplot() +
-    ggtitle("Recent project") +
-    theme_void() + theme(plot.title = element_text(size = 60, hjust = 0.5, margin = margin(t = 10)))
-  col_historical = ggplot() +
-    ggtitle("Time-shifted historical match") +
-    theme_void() + theme(plot.title = element_text(size = 60, hjust = 0.5, margin = margin(t = 10)))
-
-# Figure 3a. ex ante forecasts with placebo areas
-  plots = (p_regional + p_project + p_historical) +
-    plot_layout(nrow = 1, guides = "collect", axis_titles = "collect")
-  cols = (col_regional + col_project + col_historical) +
-    plot_layout(nrow = 1)
-  plot_complete =
-    col_ante / cols / plots +
-    plot_layout(nrow = 3, heights = c(0.02, 0.01, 1))
-  ggsave(paste0(fig_path, "figure3a_placebo_ex_ante_new.png"), width = 48, height = 20, units = "in")
-
-# Figure 3b. ex post estimation with placebo areas
-  plot_complete =
-    col_post / p_post +
-    plot_layout(nrow = 2, heights = c(0.02, 1))
-  ggsave(paste0(fig_path, "figure3b_placebo_ex_post.png"), width = 18, height = 20, units = "in")
-
-# Figure 4. t-test result
-
-  # load data
-  out_defor = read.csv("/maps/jh2589/eping/project_rates.csv") %>%
-    mutate(mae_region = abs(regional_exante_rate - k_rate),
-           mae_project = abs(k_exante_rate - k_rate),
-           mae_shifted = abs(s_exante_rate - k_rate),
-           mae_expost = abs(s_expost_rate - k_rate),
-           mape_region = mae_region / k_rate,
-           mape_project = mae_project / k_rate,
-           mape_shifted = mae_shifted / k_rate,
-           mape_expost = mae_expost / k_rate)
-
-  mape_region = mean(out_defor$mape_region)
-  mape_project = mean(out_defor$mape_project)
-  mape_shifted = mean(out_defor$mape_shifted)
-  mape_expost = mean(out_defor$mape_expost)
-
-  # Create a named vector for labels of different types
-  label_types = c(
-    "Recent regional" = "Recent regional",
-    "Recent project" = "Recent project",
-    "Time-shifted historical match" = "Time-shifted\nhistorical match",
-    "Ex post match" = expression(italic("Ex post") ~ "\nmatch")
-  )
-  colors = c("#006CD1", "#40B0A6", "#CDAC60", "#C13C3C")
-
-  t_out_list = list(t.test(out_defor$regional_exante_rate, out_defor$k_rate, paired = T),
-                    t.test(out_defor$k_exante_rate, out_defor$k_rate, paired = T),
-                    t.test(out_defor$s_exante_rate, out_defor$k_rate, paired = T),
-                    t.test(out_defor$s_expost_rate, out_defor$k_rate, paired = T))
-  t_out_df = lapply(t_out_list, function(x) {
-    data.frame(estimate = as.numeric(x$estimate),
-               ci_lower = as.numeric(x$conf.int[1]),
-               ci_upper = as.numeric(x$conf.int[2]),
-               pval = as.numeric(x$p.value))
-    }) %>%
-    list_rbind() %>%
-    mutate(type = factor(names(label_types), levels = names(label_types)))
-
-  p_t_out = ggplot(data = t_out_df, aes(x = type)) +
-    geom_col(aes(y = estimate, fill = type)) +
-    geom_hline(yintercept = 0, linewidth = 1, linetype = 2) +
-    geom_errorbar(aes(ymin = ci_lower, ymax = ci_upper), width = 0.2, linewidth = 0.5) +
-    geom_text(aes(y = pmax(0, ci_upper) + 0.05, label = ifelse(round(pval, 2) == 0, "< 0.01", round(pval, 2))), size = 5) +
-    scale_fill_manual(values = colors, guide = NULL) +
-    scale_x_discrete(labels = label_types) +
-    labs(x = "Estimate type", y = "Estimate-to-observed difference") +
-    theme_bw() +
-    theme(panel.grid = element_blank(),
-          axis.title = element_text(size = 18),
-          axis.text = element_text(size = 16),
-          plot.margin = unit(c(1, 1, 1, 1), "cm"),
-          axis.title.x = element_text(margin = margin(t = 20)),
-          axis.text.x = element_text(margin = margin(t = 30), hjust = 0.5, vjust = 0.5))
-  ggsave(paste0(fig_path, "figure5_t_test_out.png"), width = 10, height = 10, units = "in")
-  }
-
-
-scale_color_manual(values = c(best = "#40B0A6", loose = "#006CD1", lagged = "#CDAC60")) +
-
-# Figure in SI: ongoing projects
-if(analysis_type == "ongoing") {
-  closs_ante_regional = read.csv(paste0(out_path, "_baseline_loose_boot.csv"), header = T)
-  closs_ante_project = read.csv(paste0(out_path, "_baseline_best_boot.csv"), header = T)
-  closs_ante_historical = read.csv(paste0(out_path, "_baseline_lagged_boot.csv"), header = T)
-  closs_post_counterfactual = read.csv(paste0(out_path, "_post_cf_c_loss.csv"), header = T)
-
-  # Create plots
-  out_regional = plotPlacebo(dat = rbind(closs_post_counterfactual, closs_ante_regional),
-                             label_to_x = "cf_c_loss", col = "#006CD1")
-  out_project = plotPlacebo(dat = rbind(closs_post_counterfactual, closs_ante_project),
-                            label_to_x = "cf_c_loss", col = "#40B0A6")
-  out_historical = plotPlacebo(dat = rbind(closs_post_counterfactual, closs_ante_historical),
-                               label_to_x = "cf_c_loss", col = "#CDAC60")
-
-  p_regional = out_regional$p
-  p_project = out_project$p +
-    theme(axis.title.y = element_blank(), axis.text.y = element_blank(), axis.ticks.y = element_blank())
-  p_historical = out_historical$p +
-    theme(axis.title.y = element_blank(), axis.text.y = element_blank(), axis.ticks.y = element_blank())
-
-  # Create column labels
-  col_ante = ggplot() +
-    ggtitle(bquote(italic("Ex ante") ~ "forecasts")) +
-    theme_void() + theme(plot.title = element_text(size = 40, hjust = 0.5))
-
-  col_regional = ggplot() +
-    ggtitle("Recent regional") +
-    theme_void() + theme(plot.title = element_text(size = 40, hjust = 0.5))
-  col_project = ggplot() +
-    ggtitle("Recent project") +
-    theme_void() + theme(plot.title = element_text(size = 40, hjust = 0.5))
-  col_historical = ggplot() +
-    ggtitle("Time-shifted historical match") +
-    theme_void() + theme(plot.title = element_text(size = 40, hjust = 0.5))
-
-  plots = (p_regional + p_project + p_historical) +
-    plot_layout(nrow = 1, guides = "collect", axis_titles = "collect")
-  cols = (col_regional + col_project + col_historical) +
-    plot_layout(nrow = 1)
-  plot_complete =
-    col_ante / cols / plots +
-    plot_layout(nrow = 3, heights = c(0.02, 0.01, 1))
-  ggsave(paste0(fig_path, "figure_s4_ongoing_projects_new.png"), width = 48, height = 16, units = "in")
+ggsave(plot_all, filename = paste0(fig_path, "forecast_5_gam_summ.png"), width = 30, height = 30, unit = "cm")
