@@ -7,18 +7,9 @@ library(magrittr) #pipe operators
 #library(sf) #st_drop_geometry() used in GetCarbonLoss.r (runs on GDAL 3.10)
 #library(arrow) #read_parquet()
 #library(MatchIt) #matchit(), used in the customised function AssessBalance()
-library(boot) #boot
-library(scales) #trans_break
-library(Metrics) #CalcError.r: rmse, mae
 library(patchwork)
 
 options(dplyr.summarise.inform = F) #remove dplyr summarise grouping message because it prints a lot
-
-#Load pre-defined functions
-source("BootOut.r")
-source("CalcError.r")
-source("plotPlacebo.r")
-source("plotBaseline.r")
 
 #Define input variables needed to read TMF implementation output and other data
 
@@ -186,7 +177,7 @@ write.csv(forecast_hyb_summ, paste0(out_path, "_forecast_summ_3_hyb.csv"), row.n
 # Plot forecasting performances ----
 forecast_aggr = rbind(forecast_prj_summ %>% dplyr::select(year, r2) %>% mutate(type = "Project"),
                       forecast_reg_summ %>% dplyr::select(year, r2) %>% mutate(type = "Region"),
-                      forecast_hyb_summ %>% dplyr::select(year, r2) %>% mutate(type = "Hybrid"))
+                      forecast_hyb_summ %>% dplyr::select(year, r2) %>% mutate(type = "Mixed"))
 
 forecast_aggr_summ = forecast_aggr %>%
   group_by(type, year) %>%
@@ -196,13 +187,13 @@ forecast_aggr_summ = forecast_aggr %>%
             lower = quantile(r2, 0.025, na.rm = T),
             upper = quantile(r2, 0.975, na.rm = T)) %>%
   ungroup() %>%
-  mutate(type = factor(type, levels = c("Project", "Region", "Hybrid")))
+  mutate(type = factor(type, levels = c("Project", "Region", "Mixed")))
 
 axis_label_prj = expression(paste("Start of historical period for project rates (years before ", italic(t[0]), ")", sep = ""))
 axis_label_reg = expression(paste("Start of historical period for regional rates (years before ", italic(t[0]), ")", sep = ""))
-axis_label_forecast = expression(paste("End of forecasted period (years after ", italic(t[0]), ")", sep = ""))
+axis_label_target = expression(paste("End of target period (years after ", italic(t[0]), ")", sep = ""))
 
-#plot overall r2 range for each type of forecasts
+#Figure 5. r2 mean and range for each type of forecasts across all target periods
 ggplot(data = forecast_aggr_summ, aes(x = year, y = mean)) +
   geom_line(aes(color = type), linewidth = 2) +
   geom_ribbon(aes(ymin = min, ymax = max, fill = type), alpha = 0.2) +
@@ -210,24 +201,24 @@ ggplot(data = forecast_aggr_summ, aes(x = year, y = mean)) +
   scale_fill_manual(values = c("#40B0A6", "#CDAC60", "#9467BD")) +
   scale_x_continuous(breaks = 1:10, labels = 1:10) +
   scale_y_continuous(breaks = seq(0, 0.75, 0.25), labels = seq(0, 0.75, 0.25)) +
-  labs(x = axis_label_forecast,
+  labs(x = axis_label_target,
        y = expression(R^2),
        color = "Forecast type",
        fill = "Forecast type") +
   theme_bw() +
   theme(panel.grid = element_blank(),
-        plot.title = element_text(size = 24, hjust = 0.5),
-        axis.title = element_text(size = 22),
-        axis.text = element_text(size = 20),
+        plot.title = element_text(size = 26, hjust = 0.5),
+        axis.title = element_text(size = 24),
+        axis.text = element_text(size = 22),
         axis.ticks = element_line(linewidth = 1),
         axis.ticks.length = unit(0.2, "cm"),
-        legend.title = element_text(size = 22),
-        legend.text = element_text(size = 20),
+        legend.title = element_text(size = 24),
+        legend.text = element_text(size = 22),
         legend.key.size = unit(1.5, "cm"))
 ggsave(paste0(fig_path, "forecast_0_overall_r2.png"),
        width = 35, height = 30, unit = "cm")
 
-#Supplementary: simple forecasts using project rates
+#Supplementary: determine historical period for project-based forecasts
 ggplot(data = forecast_prj_summ, aes(x = project_used, y = year)) +
   geom_tile(aes(fill = r2)) +
   geom_text(aes(label = round(r2, 3)), color = "white", size = 6) +
@@ -252,7 +243,7 @@ ggplot(data = forecast_prj_summ, aes(x = project_used, y = year)) +
 ggsave(paste0(fig_path, "forecast_1_prj.png"),
        width = 30, height = 30, unit = "cm")
 
-#Supplementary: simple forecasts using regional rates
+#Supplementary: determine historical period for region-based forecasts
 ggplot(data = forecast_reg_summ, aes(x = region_used, y = year)) +
   geom_tile(aes(fill = r2)) +
   scale_fill_gradient(limits = c(0, 0.75), breaks = seq(0, 0.75, 0.25), low = "black", high = "#CDAC60") +
@@ -277,32 +268,35 @@ ggplot(data = forecast_reg_summ, aes(x = region_used, y = year)) +
 ggsave(paste0(fig_path, "forecast_2_reg.png"),
        width = 30, height = 30, unit = "cm")
 
-#Supplementary: mixed forecasts using project and regional rates
+#determine historical periods for mixed forecasts (using project and regional rates)
 
 #average r2 over forecasted periods longer than 5 years
 forecast_hyb_summ_yr = forecast_hyb_summ %>%
   filter(year >= 5) %>%
   group_by(project_used, region_used) %>%
   summarise(r2 = mean(r2, na.rm = T)) %>%
-  ungroup()
+  ungroup() %>%
+  mutate(rank = rank(-r2))
 
-#find the historical periods that give the highest average r2 (best method)
-max_r2 = forecast_hyb_summ_yr %>%
+#find maximum of average r2
+r2_max = forecast_hyb_summ_yr %>%
   filter(r2 == max(r2, na.rm = T))
 #project_used = -4 and region_used = -1
 #but actually as long as project_used is not -1 and region_used is 1, performance is good
+r2_top10 = forecast_hyb_summ_yr %>%
+  filter(rank <= 10)
 
-ggplot(data = forecast_hyb_summ_yr, aes(x = project_used, y = region_used)) +
-  geom_tile(aes(fill = r2)) +
-  geom_tile(data = max_r2, aes(x = project_used, y = region_used, fill = r2), color = "red", linewidth = 2, alpha = 0) +
+#Figure 6. Average R2 for all combinations of historical periods for the mixed forecasting approach
+ggplot(data = forecast_hyb_summ_yr, aes(x = project_used, y = region_used, fill = r2)) +
+  geom_tile() +
+  geom_tile(data = r2_top10, aes(x = project_used, y = region_used, fill = r2), color = "white", linewidth = 2, alpha = 0, width = 1, height = 1) +
+  geom_tile(data = r2_max, aes(x = project_used, y = region_used, fill = r2), color = "red", linewidth = 2, alpha = 0, width = 1, height = 1) +
   scale_fill_gradient(limits = c(0, 0.75), breaks = seq(0, 0.75, 0.25), low = "black", high = "#9467BD") +
   scale_x_continuous(breaks = -10:-1, labels = 10:1, expand = c(0, 0)) +
   scale_y_continuous(breaks = -10:-1, labels = 10:1, expand = c(0, 0)) +
-  geom_text(aes(label = round(r2, 3)), color = "white", size = 6) +
-  labs(title = "Mixed forecasts",
-      x = expression(paste("Start of historical period for project rates (years before ", italic(t[0]), ")", sep = "")),
-      y = expression(paste("Start of historical period for regional rates (years before ", italic(t[0]), ")", sep = "")),
-      fill = expression(paste("Average ", R^2, sep = ""))) +
+  geom_text(aes(label = round(r2, 3)), color = "white", size = 6.5) +
+  labs(title = "Mixed forecasts", x = axis_label_prj, y = axis_label_reg,
+       fill = expression(paste("Average ", R^2, sep = ""))) +
   theme_bw() +
   theme(panel.grid = element_blank(),
         panel.border = element_blank(),
@@ -322,35 +316,50 @@ forecast_best = forecast_hyb %>%
   filter(project_used == max_r2$project_used & region_used == max_r2$region_used) %>%
   mutate(ratio = observed / forecast)
 
-for(i in 5:10) {
-  best_i = filter(forecast_best, year == i)
-  lm_i = lm(observed ~ forecast, data = best_i)
-  lm_r2 = summary(lm_i)$r.squared
-  lm_coef = coef(lm_i)
-  ratio_p5 = quantile(best_i$ratio, 0.05, na.rm = T)
-  ratio_min = min(best_i$ratio, na.rm = T)
-  type_vec = c("Original", "Adjusted")
+forecast_best_summ = matrix(NA, ncol = 5, nrow = length(5:10))
+forecast_best_plot = vector("list", length(5:10))
+for(i in seq_along(5:10)) {
+  yr_i = seq(5, 10)[i]
+  dat_i = filter(forecast_best, year == yr_i)
+  lm_out = lm(observed ~ forecast, data = dat_i)
+  lm_r2 = summary(lm_out)$r.squared
+  lm_coef = coef(lm_out)
+  ratio_p5 = quantile(dat_i$ratio, 0.05, na.rm = T)
+  ratio_min = min(dat_i$ratio, na.rm = T)
+  dat_i = dat_i %>%
+    dplyr::select(-type) %>%
+    rename(forecast_Original = forecast) %>%
+    mutate(forecast_Adjusted = forecast_Original * ratio_min)
 
-  ggplot(data = best_i) +
-    geom_point(aes(x = forecast, y = observed,
-                   shape = factor("Original", levels = type_vec),
-                   size = factor("Original", levels = type_vec))) +
-    geom_point(aes(x = forecast * ratio_min, y = observed,
-                   shape = factor("Adjusted", levels = type_vec),
-                   size = factor("Adjusted", levels = type_vec))) +
-    annotate(geom = "text", x = 2.2, y = 1.0, size = 8,
+  dat_i_comp = dat_i %>%
+    filter(!is.na(forecast_Original) & !is.na(observed))
+  mae_orig = Metrics::mae(dat_i_comp$observed, dat_i_comp$forecast_Original)
+  mae_adj = Metrics::mae(dat_i_comp$observed, dat_i_comp$forecast_Adjusted)
+  forecast_best_summ[i, ] = c(yr_i, lm_r2, mae_orig, ratio_min, mae_adj)
+
+  dat_long = dat_i %>%
+    pivot_longer(all_of(c("forecast_Original", "forecast_Adjusted")), names_to = "type", names_prefix = "forecast_", values_to = "forecast") %>%
+    mutate(type = factor(type, levels = c("Original", "Adjusted")))
+
+  forecast_best_plot[[i]] = ggplot(data = dat_long) +
+    geom_point(aes(x = forecast, y = observed, shape = type, size = type)) +
+    annotate(geom = "text", x = 2.2, y = 0.9, size = 8,
              label = bquote(paste(R^2, " = ", .(round(lm_r2, 3))))) +
-    annotate(geom = "text", x = 2.2, y = 0.8, size = 8,
-             label = bquote(paste("Observed = Forecast * ", .(round(lm_coef[2], 3)), " + ", .(round(lm_coef[1], 3))))) +
-    annotate(geom = "text", x = 2.2, y = 0.6, size = 8,
+    annotate(geom = "text", x = 2.2, y = 0.7, size = 8,
              label = bquote(paste(Ratio[min], " = ", .(round(ratio_min, 3))))) +
+    annotate(geom = "text", x = 2.2, y = 0.5, size = 8,
+             label = bquote(paste("Original MAE: ", .(round(mae_orig, 3))))) +
+    annotate(geom = "text", x = 2.2, y = 0.3, size = 8,
+             label = bquote(paste("Adjusted MAE: ", .(round(mae_adj, 3))))) +
+    annotate(geom = "text", x = 2.2, y = 0.1, size = 8,
+             label = bquote(paste("Observed = Forecast * ", .(round(lm_coef[2], 3)), " + ", .(round(lm_coef[1], 3))))) +
     geom_abline(intercept = 0, slope = 1, linetype = "dashed") +
     geom_abline(intercept = lm_coef[1], slope = lm_coef[2], color = "red", linetype = "dotted") +
     scale_shape_manual(name = "Forecast type", values = c("Original" = 20, "Adjusted" = 1)) +
     scale_size_manual(name = "Forecast type", values = c("Original" = 2, "Adjusted" = 3)) +
-    labs(title = paste0("Forecast performance for the ", i, "-year period"),
-         x = "Forecast",
-         y = "Observed") +
+    labs(title = paste0(yr_i, "-year target period"),
+         x = bquote(paste("Forecasted carbon loss rate (MgC ", ha^-1, " ", yr^-1, ")")),
+         y = bquote(paste("Observed carbon loss rate (MgC ", ha^-1, " ", yr^-1, ")"))) +
     scale_x_continuous(limits = c(0, 3.5), breaks = seq(0, 3.5, 0.5)) +
     scale_y_continuous(limits = c(0, 3.5), breaks = seq(0, 3.5, 0.5)) +
     theme_bw() +
@@ -363,9 +372,65 @@ for(i in 5:10) {
           legend.title = element_text(size = 24),
           legend.text = element_text(size = 20),
           legend.key.size = unit(1.5, "cm"))
-  ggsave(paste0(fig_path, "forecast_4_vs_obs_over_", i, "_years.png"),
-          width = 35, height = 30, unit = "cm")
 }
+forecast_best_summ = forecast_best_summ %>%
+  as.data.frame() %>%
+  set_colnames(c("year", "r2", "mae_orig", "ratio_min", "mae_adj"))
+
+#Figure 7. Forecasted vs observed values for the 5-year and 10-year target periods
+plot_5_10 = (forecast_best_plot[[1]] + forecast_best_plot[[6]]) +
+  plot_layout(axis_titles = "collect_y", guides = "collect") &
+  theme(legend.position = "bottom")
+ggsave(paste0(fig_path, "forecast_4_vs_obs.png"),
+          width = 50, height = 30, unit = "cm")
+
+
+#Figure 8. R2, ratio_min, original MAE and adjusted MAE over target periods
+plot_r2 = ggplot(data = forecast_best_summ, aes(x = year, y = r2)) +
+  geom_line() +
+  labs(x = axis_label_target, y = expression(paste("Average ", R^2, sep = ""))) +
+  theme_bw() +
+  theme(panel.grid = element_blank(),
+        panel.spacing = unit(0, "cm"),
+        plot.title = element_text(size = 28, hjust = 0.5),
+        axis.title = element_text(size = 24),
+        axis.text = element_text(size = 20))
+
+plot_ratiomin = ggplot(data = forecast_best_summ, aes(x = year, y = ratio_min)) +
+  geom_line() +
+  labs(x = axis_label_target, y = expression(Ratio[min])) +
+  theme_bw() +
+  theme(panel.grid = element_blank(),
+        panel.spacing = unit(0, "cm"),
+        plot.title = element_text(size = 28, hjust = 0.5),
+        axis.title = element_text(size = 24),
+        axis.text = element_text(size = 20))
+
+forecast_best_summ_long = forecast_best_summ %>%
+  dplyr::select(year, mae_orig, mae_adj) %>%
+  pivot_longer(mae_orig:mae_adj, names_to = "type", names_prefix = "mae_", values_to = "mae") %>%
+  mutate(type = factor(type, levels = c("orig", "adj"), labels = c("Original", "Adjusted")))
+plot_mae = ggplot(data = forecast_best_summ_long, aes(x = year, y = mae, group = type, color = type, linewidth = type)) +
+  geom_line() +
+  scale_color_manual(values = c("red", "black")) +
+  scale_linewidth_manual(values = c(1, 2)) +
+  labs(x = axis_label_target, y = "Mean absolute error (MAE)", color = "Forecast type", linewidth = "Forecast type") +
+  theme_bw() +
+  theme(panel.grid = element_blank(),
+        panel.spacing = unit(0, "cm"),
+        plot.title = element_text(size = 28, hjust = 0.5),
+        axis.title = element_text(size = 24),
+        axis.text = element_text(size = 20),
+        legend.title = element_text(size = 24),
+        legend.text = element_text(size = 20))
+
+plot_all = (plot_r2 / plot_ratiomin / plot_mae) +
+  plot_layout(axis_titles = "collect_x")
+ggsave(paste0(fig_path, "forecast_5_vs_target_period.png"),
+          width = 40, height = 40, unit = "cm")
+
+
+
 
 
 # Supplementary: se GAM to look at how forecast r2 changes with forecasting parameters ----

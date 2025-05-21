@@ -7,8 +7,6 @@ library(magrittr) #pipe operators
 library(sf) #st_drop_geometry() used in GetCarbonLoss.r (runs on GDAL 3.10)
 library(arrow) #read_parquet()
 library(MatchIt) #matchit(), used in the customised function AssessBalance()
-#library(scales) #trans_break
-#library(Metrics) #CalcError.r: rmse, mae
 
 options(dplyr.summarise.inform = F) #remove dplyr summarise grouping message because it prints a lot
 
@@ -18,9 +16,6 @@ source("ReformatPixels.r") #wrapper function to reformat column names of data fr
 source("AssessBalance.r") #function to assess matching balance
 source("GetCarbonLoss.r") #function to generate time series of annual change in project-level average carbon density
 source("BootOut.r")
-source("CalcError.r")
-source("plotPlacebo.r")
-source("plotBaseline.r")
 
 #Define input variables needed to read TMF implementation output and other data
 
