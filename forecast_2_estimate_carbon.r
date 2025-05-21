@@ -38,6 +38,7 @@ library(magrittr) #pipe operators
 library(sf) #st_drop_geometry() used in GetCarbonLoss.r (runs on GDAL 3.10)
 library(arrow) #read_parquet()
 library(MatchIt) #matchit(), used in the customised function AssessBalance()
+library(boot) #boot::boot
 
 #Load pre-defined functions
 source("FindFiles.r") #wrapper function to search files or folders based on inclusion/exclusion keywords
