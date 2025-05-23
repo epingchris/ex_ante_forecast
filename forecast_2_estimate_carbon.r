@@ -64,12 +64,43 @@ cdens_list = project_var %>%
 parquet_dirs = paste0(parquet_path, projects)
 k_paths = rep(NA, length(projects))
 m_paths = rep(NA, length(projects))
+
+#retrieve project-level environmental characteristics
+var_envir_list = vector("list", length(projects))
 for(i in seq_along(projects)) {
   k_paths[i] = FindFiles(parquet_dirs[i], "k.parquet", full = T)
   m_paths[i] = FindFiles(parquet_dirs[i], "matches.parquet", full = T)
-}
 
-# B. Get ex post additionality, project and regional carbon loss rates ----
+  setK = read_parquet(k_paths[i])
+  setM = read_parquet(m_paths[i])
+  var_envir_list[[i]] = data.frame(prj_elev = mean(setK$elevation, na.rm = T),
+                                   prj_slope = mean(setK$slope, na.rm = T),
+                                   prj_remote = mean(setK$access, na.rm = T),
+                                   reg_elev = mean(setM$elevation, na.rm = T),
+                                   reg_slope = mean(setM$slope, na.rm = T),
+                                   reg_remote = mean(setM$access, na.rm = T))
+}
+var_envir = list_rbind(var_envir_list)
+project_var_envir = cbind(project_var, var_envir)
+
+#load socio-economic variables for each country
+#GDP per capita (US$) in 2023
+gdppc = read.csv("/maps/epr26/API_NY.GDP.PCAP.CD_DS2_en_csv_v2_85121.csv", header = T, skip = 4) %>%
+  dplyr::select(Country.Name, X2023) %>%
+  rename(country = Country.Name, gdppc_2023 = X2023)
+
+#World Governance Index (Control of Corruption, cc) in 2023
+wgi = read.csv("/maps/epr26/wgidataset.csv", header = T) %>%
+  filter(indicator == "cc" & year == 2023) %>%
+  dplyr::select(countryname, estimate, stddev) %>%
+  rename(country = countryname, wgicc_estimate = estimate, wgicc_stddev = stddev)
+
+project_var_gdppc = merge(project_var_envir, gdppc, by = "country", all.x = T)
+project_var_complete = merge(project_var_gdppc, wgi, by = "country", all.x = T)
+write.csv(project_var_complete, paste0(out_path, "_project_var_complete.csv"), row.names = F)
+
+
+#retrieve carbon time series for project pixel subsamples and matched pixels
 for(i in seq_along(projects)) {
   t0 = t0_vec[i]
   luc_t_20 = paste0("luc_", t0_vec[i] - 20)
@@ -128,16 +159,7 @@ for(i in seq_along(projects)) {
   b = Sys.time()
   cat("Project", i, "/", length(projects), "-", projects[i], "- project carbon loss :", b - a, "\n")
 
-  a = Sys.time()
-  setM = read_parquet(m_paths[i])
-  if(nrow(setM) > 250000) setM = setM[sample(nrow(setM), 250000), ]
-  pixels_region = ReformatPixels(in_df = setM, prefix = "", t0 = t0, treatment = "region", pair = 1)
-
-  #retrieve carbon time series for surrounding region
-  closs_region = GetCarbonLoss(pixels_region, t0, area_ha, area_adj_ratio = 1, cdens, pair = 1)
-  b = Sys.time()
-  cat("Project", i, "/", length(projects), "-", projects[i], "- regional carbon loss :", b - a, "\n")
-
+  #reformat into wide data frames of all projects and pairs
   carbon_cf = lapply(pairs_out, function(x) x$carbon_cf) %>%
     list_rbind() %>%
     mutate(treatment = "counterfactual")
@@ -150,12 +172,22 @@ for(i in seq_along(projects)) {
     pivot_wider(values_from = "carbon_density", names_from = "treatment")
   tmax = max(carbon_matched$year)
 
-  #calculate ex post annual per-area additionality
+  #retrieve carbon time series for surrounding region
+  a = Sys.time()
+  setM = read_parquet(m_paths[i])
+  if(nrow(setM) > 250000) setM = setM[sample(nrow(setM), 250000), ]
+  pixels_region = ReformatPixels(in_df = setM, prefix = "", t0 = t0, treatment = "region", pair = 1)
+  closs_region = GetCarbonLoss(pixels_region, t0, area_ha, area_adj_ratio = 1, cdens, pair = 1)
+  b = Sys.time()
+  cat("Project", i, "/", length(projects), "-", projects[i], "- regional carbon loss :", b - a, "\n")
+
+  #calculate ex post annual counterfactual carbon loss rates and per-area carbon credit generation rates
   additionality = carbon_matched %>%
     filter(year >= t0) %>%
     group_by(pair) %>%
     mutate(diff_cf = first(counterfactual) - counterfactual,
            diff_p = first(project) - project,
+           cf_closs = exp(log(diff_cf) / (year - t0)),
            additionality_whole = diff_cf - diff_p,
            additionality_annual = exp(log(additionality_whole) / (year - t0)))
 
@@ -181,6 +213,7 @@ for(i in seq_along(projects)) {
 
 
 # C. Bootstrap outcomes ----
+cf_closs_boot_list = vector("list", length(projects))
 additionality_boot_list = vector("list", length(projects))
 ante_project_boot_list = vector("list", length(projects))
 ante_region_boot_list = vector("list", length(projects))
@@ -195,6 +228,8 @@ for(i in seq_along(projects)) {
 
   #bootstrap ex post additionality
   a = Sys.time()
+  cf_closs_boot_list[[i]] = BootOut(in_df = additionality, column = "cf_closs", from = t0 + 1, to = tmax) %>%
+    mutate(project = project_i)
   additionality_boot_list[[i]] = BootOut(in_df = additionality, column = "additionality_annual", from = t0 + 1, to = tmax) %>%
     mutate(project = project_i)
   b = Sys.time()
@@ -215,10 +250,12 @@ for(i in seq_along(projects)) {
   cat("Project", i, "/", length(projects), "-", projects[i], "- project rate bootstrapped:", b - a, "\n")
 }
 
+cf_closs_boot_df = list_rbind(cf_closs_boot_list)
 additionality_boot_df = list_rbind(additionality_boot_list)
 ante_project_boot_df = list_rbind(ante_project_boot_list)
 ante_region_boot_df = list_rbind(ante_region_boot_list)
 
+write.csv(cf_closs_boot_df, paste0(out_path, "_boot_cf_closs.csv"), row.names = F)
 write.csv(additionality_boot_df, paste0(out_path, "_boot_additionality.csv"), row.names = F)
 write.csv(ante_project_boot_df, paste0(out_path, "_boot_project_closs_rate.csv"), row.names = F)
 write.csv(ante_region_boot_df, paste0(out_path, "_boot_regional_closs_rate.csv"), row.names = F)
