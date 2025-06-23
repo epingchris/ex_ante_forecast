@@ -192,11 +192,11 @@ axis_label_prj = expression(paste("Start of historical period for project rates 
 axis_label_reg = expression(paste("Start of historical period for regional rates (years before ", italic(t[0]), ")", sep = ""))
 axis_label_target = expression(paste("End of target period (years after ", italic(t[0]), ")", sep = ""))
 
-forecast_aggr = rbind(forecast_prj_summ %>% dplyr::select(year, r2, mae, bias, type),
-                      forecast_reg_summ %>% dplyr::select(year, r2, mae, bias, type),
-                      forecast_mix_summ %>% dplyr::select(year, r2, mae, bias, type))
+forecast_aggr = bind_rows(forecast_prj_summ, forecast_reg_summ, forecast_mix_summ) %>%
+  relocate(region_used, .after = project_used)
 
 #Figure 5. r2, MAE and bias (mean and range) for each type of forecasts across all target periods
+figure5_list = vector("list", 0)
 for(var in c("r2", "mae", "bias")) {
   figtitle = switch(var,
                     "r2" = expression("A. Coefficient of determination (R"^2*")"),
@@ -206,6 +206,14 @@ for(var in c("r2", "mae", "bias")) {
                    "r2" = "figure5a_overall_r2.png",
                    "mae" = "figure5b_overall_mae.png",
                    "bias" = "figure5c_overall_bias.png")
+  y_scale = switch(var,
+             "r2" = seq(0, 0.75, 0.25),
+             "mae" = seq(0, 1.2, 0.2),
+             "bias" = round(seq(-1.25, 0.75, 0.25), 2))
+  y_label = switch(var,
+             "r2" = expression(R^2),
+             "mae" = expression(MAE),
+             "bias" = expression(bias))
 
   forecast_aggr_summ = forecast_aggr %>%
     dplyr::select(any_of(c("type", var, "year"))) %>%
@@ -218,14 +226,14 @@ for(var in c("r2", "mae", "bias")) {
     ungroup() %>%
     mutate(type = factor(type, levels = c("Project", "Region", "Mixed")))
 
-  ggplot(data = forecast_aggr_summ, aes(x = year, y = mean)) +
+  figure5_list[[var]] = ggplot(data = forecast_aggr_summ, aes(x = year, y = mean)) +
     geom_line(aes(color = type), linewidth = 2) +
     geom_ribbon(aes(ymin = min, ymax = max, fill = type), alpha = 0.2) +
     scale_color_manual(values = c("#40B0A6", "#CDAC60", "#9467BD")) +
     scale_fill_manual(values = c("#40B0A6", "#CDAC60", "#9467BD")) +
     scale_x_continuous(breaks = 1:10, labels = 1:10) +
-    scale_y_continuous(breaks = seq(0, 0.75, 0.25), labels = seq(0, 0.75, 0.25)) +
-    labs(title = figtitle, x = axis_label_target, y = expression(R^2),
+    scale_y_continuous(breaks = y_scale, labels = y_scale) +
+    labs(title = figtitle, x = "Number of years afte project start", y = y_label,
          color = "Forecast type", fill = "Forecast type") +
     theme_bw() +
     theme(panel.grid = element_blank(),
@@ -237,45 +245,50 @@ for(var in c("r2", "mae", "bias")) {
           legend.title = element_text(size = 24),
           legend.text = element_text(size = 22),
           legend.key.size = unit(1.5, "cm"))
-  ggsave(paste0(fig_path, figname), width = 35, height = 30, unit = "cm")
 }
 
+figure5_full = figure5_list$r2 / figure5_list$mae / figure5_list$bias +
+  plot_layout(guide = "collect", axes = "collect", axis_titles = "collect") &
+  theme(legend.position = "bottom")
+ggsave(paste0(fig_path, "figure5_overall.png"), width = 40, height = 60, unit = "cm")
 
-#Determine best historical periods for forecasts
 
-#Calculate average r2 over target periods longer than 5 years
-forecast_prj_summ_yr = forecast_prj_summ %>%
-  filter(year >= 5) %>%
-  group_by(project_used) %>%
-  summarise(r2_closs = mean(r2_closs, na.rm = T)) %>%
-  ungroup() %>%
-  mutate(rank = rank(-r2_closs), type = "Project") %>%
-  rename(year_used = project_used)
-#project_used: -7
+#Determine the best forecasts using overall rankings of r2, MAE and bias for 5-year and 10-year forecasts
+normalize = function(vec) {
+  (vec - min(vec, na.rm = T)) / (max(vec, na.rm = T) - min(vec, na.rm = T))
+}
 
-forecast_reg_summ_yr = forecast_reg_summ %>%
-  filter(year >= 5) %>%
-  group_by(region_used) %>%
-  summarise(r2_closs = mean(r2_closs, na.rm = T)) %>%
-  ungroup() %>%
-  mutate(rank = rank(-r2_closs), type = "Region") %>%
-  rename(year_used = region_used)
-  mutate
-#region_used: -10
-
-forecast_mix_summ_yr = forecast_mix_summ %>%
-  filter(year >= 5) %>%
-  group_by(project_used, region_used) %>%
-  summarise(r2_closs = mean(r2_closs, na.rm = T)) %>%
-  ungroup() %>%
-  mutate(rank = rank(-r2_closs))
-
-#Find maximum: project_used = -7 and region_used = -10
-r2_max = forecast_mix_summ_yr %>%
-  filter(rank == 1)
-#Find top ten: mostly when project_used is not -1 and region_used is -10
-r2_top10 = forecast_mix_summ_yr %>%
-  filter(rank <= 10)
+forecast_aggr_rank_5 = forecast_aggr %>%
+  filter(year == 5) %>%
+  mutate(r2_rank = rank(-r2), mae_rank = rank(mae), bias_rank = rank(abs(bias)),
+         r2_nmz = normalize(-r2), mae_nmz = normalize(mae), bias_nmz = normalize((abs(bias))))
+forecast_aggr_rank_10 = forecast_aggr %>%
+  filter(year == 10) %>%
+  mutate(r2_rank = rank(-r2), mae_rank = rank(mae), bias_rank = rank(abs(bias)),
+         r2_nmz = normalize(-r2), mae_nmz = normalize(mae), bias_nmz = normalize((abs(bias))))
+forecast_aggr_rank = bind_rows(forecast_aggr_rank_5, forecast_aggr_rank_10) %>%
+  pivot_wider(names_from = year,
+              values_from = c(r2, mae, bias, r2_rank, mae_rank, bias_rank, r2_nmz, mae_nmz, bias_nmz),
+              names_sep = "_") %>%
+  mutate(sum_5 = r2_nmz_5 + mae_nmz_5 + bias_nmz_5,
+         sum_10 = r2_nmz_10 + mae_nmz_10 + bias_nmz_10,
+         sum_tot = sum_5 + sum_10,
+         rank_sum_5 = r2_rank_5 + mae_rank_5 + bias_rank_5,
+         rank_sum_10 = r2_rank_10 + mae_rank_10 + bias_rank_10,
+         rank_sum_tot = sum_5 + sum_10) %>%
+  mutate(rank_sum_5 = rank(sum_5),
+         rank_sum_10 = rank(sum_10),
+         rank_sum_tot = rank(sum_tot),
+         rank_sum_rank_5 = rank(rank_sum_5),
+         rank_sum_rank_10 = rank(rank_sum_10),
+         rank_sum_rank_tot = rank(rank_sum_tot))
+View(filter(forecast_aggr_rank, rank_sum_rank_5 <= 12))
+View(filter(forecast_aggr_rank, rank_sum_rank_10 <= 12))
+View(filter(forecast_aggr_rank, rank_sum_rank_tot <= 12))
+View(filter(forecast_aggr_rank, rank_sum_5 <= 12))
+View(filter(forecast_aggr_rank, rank_sum_10 <= 12))
+View(filter(forecast_aggr_rank, rank_sum_tot <= 12))
+#best forecast: mixed with project_used = -10 and region_used = -10
 
 #Figure S3. Best historical periods for simple forecasts
 forecast_smp_summ_yr = rbind(forecast_prj_summ_yr, forecast_reg_summ_yr)
@@ -328,7 +341,7 @@ ggsave(paste0(fig_path, "figure_6_r2_closs_historical_period_mix.png"),
 
 #Build a model to predict additionality over five-year and ten-year intervals
 forecast_best = forecast_mix %>%
-  filter(project_used == -7 & region_used == -10 & year == 5) %>%
+  filter(project_used == -10 & region_used == -10 & year == 5) %>%
   dplyr::select(!c(project_used, region_used, obs_cf_closs, year, type))
 
 envir_var = project_var %>%
@@ -347,13 +360,13 @@ forecast_var = left_join(forecast_best, envir_var, join_by(project == ID))
 forecast_var_scaled = as.data.frame(scale(forecast_var))
 
 forecast_lm = lm(obs_add ~ . - project, data = forecast_var_scaled)
-summary(forecast_lm) #adjusted R2 = 0.6922
+summary(forecast_lm) #adjusted R2 = 0.708
 stepAIC(forecast_lm, direction = "backward", trace = 1)
 #backward selection dropped WGICC (corruption index)
 forecast_lm_sel = lm(obs_add ~ forecast + area_ha + prj_slope + gdppc_mean, data = forecast_var_scaled)
 #only prj_remote is not significant
 summary(forecast_lm_sel) #adjusted R2 = 0.7381
-R2_full = summary(forecast_lm_sel)$adj.r.squared #adjusted R2 = 0.7381
+R2_full = summary(forecast_lm_sel)$adj.r.squared #adjusted R2 = 0.745
 lm_coef = coef(forecast_lm_sel)
 
 #MAE
@@ -369,10 +382,10 @@ forecast_lm_min_forecast = lm(obs_add ~ area_ha + prj_slope + gdppc_mean, data =
 forecast_lm_min_area = lm(obs_add ~ forecast + prj_slope + gdppc_mean, data = forecast_var_scaled)
 forecast_lm_min_slope = lm(obs_add ~ forecast + area_ha + gdppc_mean, data = forecast_var_scaled)
 forecast_lm_min_gdppc = lm(obs_add ~ forecast + area_ha + prj_slope, data = forecast_var_scaled)
-(R2_forecast = R2_full - summary(forecast_lm_min_forecast)$adj.r.squared) #0.76
-(R2_area = R2_full - summary(forecast_lm_min_area)$adj.r.squared) #0.08
-(R2_slope = R2_full - summary(forecast_lm_min_slope)$adj.r.squared) #0.24
-(R2_gdp = R2_full - summary(forecast_lm_min_gdppc)$adj.r.squared) #0.12
+(R2_forecast = R2_full - summary(forecast_lm_min_forecast)$adj.r.squared) #0.766
+(R2_area = R2_full - summary(forecast_lm_min_area)$adj.r.squared) #0.086
+(R2_slope = R2_full - summary(forecast_lm_min_slope)$adj.r.squared) #0.237
+(R2_gdp = R2_full - summary(forecast_lm_min_gdppc)$adj.r.squared) #0.116
 
 #Compare observed vs forecasted for the best forecast
 ggplot(data = forecast_var) +
