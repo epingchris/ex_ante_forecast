@@ -15,6 +15,7 @@ rm(list = ls())
 library(tidyverse) #ggplot2, dplyr, and stringr used in plotPlacebo/plotBaseline.r: tibble to store labels with bquote()
 library(magrittr) #pipe operators
 library(corrplot) #corrplot::corrplot
+library(MASS) #MASS::stepAIC
 library(vegan) #vegan::varpart
 library(eulerr) #eulerr::euler
 library(Metrics) #Metrics::mae
@@ -87,12 +88,6 @@ for(i in 1:10) {
       pull(mean)
     if(length(obs_cf_closs) < 10) obs_cf_closs = c(obs_cf_closs, rep(NA, 10 - length(obs_cf_closs)))
 
-    #observed carbon credit generation rates
-    obs_add = additionality_boot_rel %>%
-      filter(year <= 10 & project == project_k) %>%
-      pull(mean)
-    if(length(obs_add) < 10) obs_add = c(obs_add, rep(NA, 10 - length(obs_add)))
-
     #project-based forecasts
     rate_project = ante_project_boot_rel %>%
       filter(year == yr_i & project == project_k) %>%
@@ -157,20 +152,23 @@ forecast_mix = list_rbind(forecast_mix_list)
 #Calculate forecast performance as R2 of linear regression model of observed carbon loss ~ forecast
 forecast_prj_summ = forecast_prj %>%
   group_by(project_used, year) %>%
-  summarise(r2_closs = summary(lm(obs_cf_closs ~ forecast))$r.squared,
-            r2_add = summary(lm(obs_add ~ forecast))$r.squared) %>%
+  summarise(r2 = summary(lm(obs_cf_closs ~ forecast))$r.squared,
+            mae = mean(abs(forecast - obs_cf_closs), na.rm = T),
+            bias = mean(forecast - obs_cf_closs, na.rm = T)) %>%
   ungroup() %>%
   mutate(type = "Project")
 forecast_reg_summ = forecast_reg %>%
   group_by(region_used, year) %>%
-  summarise(r2_closs = summary(lm(obs_cf_closs ~ forecast))$r.squared,
-            r2_add = summary(lm(obs_add ~ forecast))$r.squared) %>%
+  summarise(r2 = summary(lm(obs_cf_closs ~ forecast))$r.squared,
+            mae = mean(abs(forecast - obs_cf_closs), na.rm = T),
+            bias = mean(forecast - obs_cf_closs, na.rm = T)) %>%
   ungroup() %>%
   mutate(type = "Region")
 forecast_mix_summ = forecast_mix %>%
   group_by(project_used, region_used, year) %>%
-  summarise(r2_closs = summary(lm(obs_cf_closs ~ forecast))$r.squared,
-            r2_add = summary(lm(obs_add ~ forecast))$r.squared) %>%
+  summarise(r2 = summary(lm(obs_cf_closs ~ forecast))$r.squared,
+            mae = mean(abs(forecast - obs_cf_closs), na.rm = T),
+            bias = mean(forecast - obs_cf_closs, na.rm = T)) %>%
   ungroup() %>%
   mutate(type = "Mixed")
 
@@ -181,60 +179,66 @@ write.csv(forecast_prj_summ, paste0(out_path, "_forecast_summ_1_prj.csv"), row.n
 write.csv(forecast_reg_summ, paste0(out_path, "_forecast_summ_2_reg.csv"), row.names = F)
 write.csv(forecast_mix_summ, paste0(out_path, "_forecast_summ_3_mix.csv"), row.names = F)
 
+forecast_prj = read.csv(paste0(out_path, "_forecast_1_prj.csv"), header = T)
+forecast_reg = read.csv(paste0(out_path, "_forecast_2_reg.csv"), header = T)
+forecast_mix = read.csv(paste0(out_path, "_forecast_3_mix.csv"), header = T)
+forecast_prj_summ = read.csv(paste0(out_path, "_forecast_summ_1_prj.csv"), header = T)
+forecast_reg_summ = read.csv(paste0(out_path, "_forecast_summ_2_reg.csv"), header = T)
+forecast_mix_summ = read.csv(paste0(out_path, "_forecast_summ_3_mix.csv"), header = T)
+
 
 #Plot and compare overall forecasting performances of three approaches
 axis_label_prj = expression(paste("Start of historical period for project rates (years before ", italic(t[0]), ")", sep = ""))
 axis_label_reg = expression(paste("Start of historical period for regional rates (years before ", italic(t[0]), ")", sep = ""))
 axis_label_target = expression(paste("End of target period (years after ", italic(t[0]), ")", sep = ""))
 
-forecast_aggr = rbind(forecast_prj_summ %>% dplyr::select(year, r2_closs, r2_add, type),
-                        forecast_reg_summ %>% dplyr::select(year, r2_closs, r2_add, type),
-                        forecast_mix_summ %>% dplyr::select(year, r2_closs, r2_add, type))
+forecast_aggr = rbind(forecast_prj_summ %>% dplyr::select(year, r2, mae, bias, type),
+                      forecast_reg_summ %>% dplyr::select(year, r2, mae, bias, type),
+                      forecast_mix_summ %>% dplyr::select(year, r2, mae, bias, type))
 
-#Figure 5. r2 mean and range for each type of forecasts across all target periods
-forecasting = "additionality" #cf_closs: counterfactual carbon loss; additionality: carbon credit generation
-if(forecasting == "cf_closs") {
+#Figure 5. r2, MAE and bias (mean and range) for each type of forecasts across all target periods
+for(var in c("r2", "mae", "bias")) {
+  figtitle = switch(var,
+                    "r2" = expression("A. Coefficient of determination (R"^2*")"),
+                    "mae" = expression("B. Mean absolute error (MAE)"),
+                    "bias" = expression("C. Predictive bias"))
+  figname = switch(var,
+                   "r2" = "figure5a_overall_r2.png",
+                   "mae" = "figure5b_overall_mae.png",
+                   "bias" = "figure5c_overall_bias.png")
+
   forecast_aggr_summ = forecast_aggr %>%
-    rename(r2 = r2_closs)
-  figtitle = "A. Forecast of counterfactual carbon loss rate"
-  figname = "figure5a_overall_r2_cf_closs.png"
-} else if(forecasting == "additionality") {
-  forecast_aggr_summ = forecast_aggr %>%
-    rename(r2 = r2_add)
-  figtitle = "B. Forecast of carbon credit generation rate"
-  figname = "figure5b_overall_r2_add.png"
+    dplyr::select(any_of(c("type", var, "year"))) %>%
+    group_by(type, year) %>%
+    summarise(mean = mean(.data[[var]], na.rm = T),
+              min = min(.data[[var]], na.rm = T),
+              max = max(.data[[var]], na.rm = T),
+              lower = quantile(.data[[var]], 0.025, na.rm = T),
+              upper = quantile(.data[[var]], 0.975, na.rm = T)) %>%
+    ungroup() %>%
+    mutate(type = factor(type, levels = c("Project", "Region", "Mixed")))
+
+  ggplot(data = forecast_aggr_summ, aes(x = year, y = mean)) +
+    geom_line(aes(color = type), linewidth = 2) +
+    geom_ribbon(aes(ymin = min, ymax = max, fill = type), alpha = 0.2) +
+    scale_color_manual(values = c("#40B0A6", "#CDAC60", "#9467BD")) +
+    scale_fill_manual(values = c("#40B0A6", "#CDAC60", "#9467BD")) +
+    scale_x_continuous(breaks = 1:10, labels = 1:10) +
+    scale_y_continuous(breaks = seq(0, 0.75, 0.25), labels = seq(0, 0.75, 0.25)) +
+    labs(title = figtitle, x = axis_label_target, y = expression(R^2),
+         color = "Forecast type", fill = "Forecast type") +
+    theme_bw() +
+    theme(panel.grid = element_blank(),
+          plot.title = element_text(size = 26, hjust = 0.5),
+          axis.title = element_text(size = 24),
+          axis.text = element_text(size = 22),
+          axis.ticks = element_line(linewidth = 1),
+          axis.ticks.length = unit(0.2, "cm"),
+          legend.title = element_text(size = 24),
+          legend.text = element_text(size = 22),
+          legend.key.size = unit(1.5, "cm"))
+  ggsave(paste0(fig_path, figname), width = 35, height = 30, unit = "cm")
 }
-
-forecast_aggr_summ = forecast_aggr %>%
-  group_by(type, year) %>%
-  summarise(mean = mean(r2, na.rm = T),
-            min = min(r2, na.rm = T),
-            max = max(r2, na.rm = T),
-            lower = quantile(r2, 0.025, na.rm = T),
-            upper = quantile(r2, 0.975, na.rm = T)) %>%
-  ungroup() %>%
-  mutate(type = factor(type, levels = c("Project", "Region", "Mixed")))
-
-ggplot(data = forecast_aggr_summ, aes(x = year, y = mean)) +
-  geom_line(aes(color = type), linewidth = 2) +
-  geom_ribbon(aes(ymin = min, ymax = max, fill = type), alpha = 0.2) +
-  scale_color_manual(values = c("#40B0A6", "#CDAC60", "#9467BD")) +
-  scale_fill_manual(values = c("#40B0A6", "#CDAC60", "#9467BD")) +
-  scale_x_continuous(breaks = 1:10, labels = 1:10) +
-  scale_y_continuous(breaks = seq(0, 0.75, 0.25), labels = seq(0, 0.75, 0.25)) +
-  labs(title = figtitle, x = axis_label_target, y = expression(R^2),
-       color = "Forecast type", fill = "Forecast type") +
-  theme_bw() +
-  theme(panel.grid = element_blank(),
-        plot.title = element_text(size = 26, hjust = 0.5),
-        axis.title = element_text(size = 24),
-        axis.text = element_text(size = 22),
-        axis.ticks = element_line(linewidth = 1),
-        axis.ticks.length = unit(0.2, "cm"),
-        legend.title = element_text(size = 24),
-        legend.text = element_text(size = 22),
-        legend.key.size = unit(1.5, "cm"))
-ggsave(paste0(fig_path, figname), width = 35, height = 30, unit = "cm")
 
 
 #Determine best historical periods for forecasts
@@ -296,7 +300,7 @@ ggplot(data = forecast_smp_summ_yr, aes(x = year_used, y = r2_closs, color = typ
 ggsave(paste0(fig_path, "figure_s3_historical_period_smp.png"),
         width = 35, height = 30, unit = "cm")
 
-#Figure S4. Average R2 for all combinations of historical periods for the mixed forecasting approach
+#Figure 6. Average R2 for all combinations of historical periods for the mixed forecasting approach
 ggplot(data = forecast_mix_summ_yr, aes(x = project_used, y = region_used, fill = r2_closs)) +
   geom_tile() +
   geom_tile(data = r2_top10, aes(x = project_used, y = region_used, fill = r2_closs), color = "white", linewidth = 2, alpha = 0, width = 1, height = 1) +
@@ -318,7 +322,7 @@ ggplot(data = forecast_mix_summ_yr, aes(x = project_used, y = region_used, fill 
         legend.title = element_text(size = 22),
         legend.text = element_text(size = 20),
         legend.key.size = unit(1.5, "cm"))
-ggsave(paste0(fig_path, "figure_s4_historical_period_mix.png"),
+ggsave(paste0(fig_path, "figure_6_r2_closs_historical_period_mix.png"),
         width = 35, height = 30, unit = "cm")
 
 
@@ -328,43 +332,47 @@ forecast_best = forecast_mix %>%
   dplyr::select(!c(project_used, region_used, obs_cf_closs, year, type))
 
 envir_var = project_var %>%
-  dplyr::select(!c(country, t0, code, wgicc_stddev) & !starts_with("cdens"))
-envir_var_cor = cor(envir_var)
+  dplyr::select(!c(country, t0, code) & !starts_with("cdens"))
+envir_var_cor = cor(envir_var %>% dplyr::select(!ID))
 corrplot(envir_var_cor, type = "lower", order = "hclust", addCoef.col = "black", diag = F)
-#prj_ and reg_ environmental variables highly correlated
-#slope and elevation highly correlated
+#prj_ and reg_ environmental variables highly correlated: remove reg_
+#slope and elevation highly correlated: remove elevation
 
 envir_var = project_var %>%
-  dplyr::select(!c(country, t0, code, wgicc_stddev, prj_elev) & !starts_with("cdens") & !starts_with("reg_"))
-envir_var_cor = cor(envir_var)
+  dplyr::select(!c(country, t0, code, prj_elev) & !starts_with("cdens") & !starts_with("reg_"))
+envir_var_cor = cor(envir_var %>% dplyr::select(!ID))
 corrplot(envir_var_cor, type = "lower", order = "hclust", addCoef.col = "black", diag = F)
 
 forecast_var = left_join(forecast_best, envir_var, join_by(project == ID))
+forecast_var_scaled = as.data.frame(scale(forecast_var))
 
-forecast_lm = lm(obs_add ~ . - project, data = forecast_var)
-summary(forecast_lm) #adjusted R2 = 0.7391
+forecast_lm = lm(obs_add ~ . - project, data = forecast_var_scaled)
+summary(forecast_lm) #adjusted R2 = 0.6922
 stepAIC(forecast_lm, direction = "backward", trace = 1)
 #backward selection dropped WGICC (corruption index)
-forecast_lm_sel = lm(obs_add ~ prj_remote + area_ha + gdppc_2023 + prj_slope + forecast, data = forecast_var)
+forecast_lm_sel = lm(obs_add ~ forecast + area_ha + prj_slope + gdppc_mean, data = forecast_var_scaled)
 #only prj_remote is not significant
-R2_full = summary(forecast_lm_sel)$adj.r.squared #adjusted R2 = 0.7352
+summary(forecast_lm_sel) #adjusted R2 = 0.7381
+R2_full = summary(forecast_lm_sel)$adj.r.squared #adjusted R2 = 0.7381
 lm_coef = coef(forecast_lm_sel)
 
-#Perform variance partitioning on historical forecast, project area, average slope, and GDP
-forecast_lm_simple = lm(obs_add ~ forecast, data = forecast_var)
-R2_simple = summary(forecast_lm_simple)$adj.r.squared #adjusted R2 = 0.4746118
-anova(forecast_lm_simple, forecast_lm_sel) #the more complex model is better
+#MAE
+predictions = predict(forecast_lm_sel)
+actuals = forecast_lm_sel$model$obs_add # or your original y variable
+(mae = mean(abs(predictions - actuals))) #0.336
 
-forecast_lm_min_intercept = lm(obs_add ~ prj_remote + area_ha + gdppc_2023 + prj_slope + forecast - 1, data = forecast_var)
-forecast_lm_min_forecast = lm(obs_add ~ prj_remote + area_ha + gdppc_2023 + prj_slope, data = forecast_var)
-forecast_lm_min_area = lm(obs_add ~ prj_remote + gdppc_2023 + prj_slope + forecast, data = forecast_var)
-forecast_lm_min_slope = lm(obs_add ~ prj_remote + area_ha + gdppc_2023 + forecast, data = forecast_var)
-forecast_lm_min_gdp = lm(obs_add ~ prj_remote + area_ha + prj_slope + forecast, data = forecast_var)
-R2_intercept = R2_full - summary(forecast_lm_min_intercept)$adj.r.squared
-R2_forecast = R2_full - summary(forecast_lm_min_forecast)$adj.r.squared
-R2_area = R2_full - summary(forecast_lm_min_area)$adj.r.squared
-R2_slope = R2_full - summary(forecast_lm_min_slope)$adj.r.squared
-R2_gdp = R2_full - summary(forecast_lm_min_gdp)$adj.r.squared
+#
+mean(forecast_lm_sel$residuals)
+
+#Perform variance partitioning on historical forecast, project area, average slope, and GDP
+forecast_lm_min_forecast = lm(obs_add ~ area_ha + prj_slope + gdppc_mean, data = forecast_var_scaled)
+forecast_lm_min_area = lm(obs_add ~ forecast + prj_slope + gdppc_mean, data = forecast_var_scaled)
+forecast_lm_min_slope = lm(obs_add ~ forecast + area_ha + gdppc_mean, data = forecast_var_scaled)
+forecast_lm_min_gdppc = lm(obs_add ~ forecast + area_ha + prj_slope, data = forecast_var_scaled)
+(R2_forecast = R2_full - summary(forecast_lm_min_forecast)$adj.r.squared) #0.76
+(R2_area = R2_full - summary(forecast_lm_min_area)$adj.r.squared) #0.08
+(R2_slope = R2_full - summary(forecast_lm_min_slope)$adj.r.squared) #0.24
+(R2_gdp = R2_full - summary(forecast_lm_min_gdppc)$adj.r.squared) #0.12
 
 #Compare observed vs forecasted for the best forecast
 ggplot(data = forecast_var) +
@@ -372,7 +380,7 @@ ggplot(data = forecast_var) +
   geom_abline(intercept = 0, slope = 1, linetype = "dashed") +
   labs(title = "Forecasts for a five-year target period",
        x = bquote(paste("Forecasted carbon credit generation rate (MgC ", ha^-1, " ", yr^-1, ")")),
-       y = bquote(paste("Forecasted carbon credit generation rate (MgC ", ha^-1, " ", yr^-1, ")"))) +
+       y = bquote(paste("Observed carbon credit generation rate (MgC ", ha^-1, " ", yr^-1, ")"))) +
   scale_x_continuous(limits = c(0, 1.5), breaks = seq(0, 1.5, 0.25)) +
   scale_y_continuous(limits = c(0, 1.5), breaks = seq(0, 1.5, 0.25)) +
   theme_bw() +
@@ -385,7 +393,7 @@ ggplot(data = forecast_var) +
         legend.title = element_text(size = 24),
         legend.text = element_text(size = 20),
         legend.key.size = unit(1.5, "cm"))
-ggsave(paste0(fig_path, "figure_6_observed_vs_forecasted_best.png"),
+ggsave(paste0(fig_path, "figure6_observed_vs_forecasted_best.png"),
         width = 35, height = 30, unit = "cm")
 
 # Supplementary: se GAM to look at how forecast r2 changes with forecasting parameters ----

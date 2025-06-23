@@ -91,21 +91,41 @@ var_envir = list_rbind(var_envir_list)
 project_var_envir = cbind(project_var, var_envir)
 
 #load socio-economic variables for each country
-#GDP per capita (US$) in 2023
+#Average and annual compound growth rate of GDP per capita (US$) five years prior to project start
 gdppc = read.csv("/maps/epr26/API_NY.GDP.PCAP.CD_DS2_en_csv_v2_85121.csv", header = T, skip = 4) %>%
-  dplyr::select(Country.Name, X2023) %>%
-  rename(country = Country.Name, gdppc_2023 = X2023)
+  dplyr::select(!c(2:4, "X")) %>%
+  pivot_longer(cols = starts_with("X"), values_to = "value", names_to = "year", names_prefix = "X")
 
-#World Governance Index (Control of Corruption, cc) in 2023
-wgi = read.csv("/maps/epr26/wgidataset.csv", header = T) %>%
-  filter(indicator == "cc" & year == 2023) %>%
-  dplyr::select(countryname, estimate, stddev) %>%
-  rename(country = countryname, wgicc_estimate = estimate, wgicc_stddev = stddev)
+project_var_envir$gdppc_mean = NA
+project_var_envir$gdppc_rate = NA
+for(i in seq_along(project_var_envir$ID)) {
+  country_i = project_var_envir[i, ]$country
+  t0_i = project_var_envir[i, ]$t0
+  gdppc_i = subset(gdppc, Country.Name == country_i & year <= t0_i & year >= t0_i - 5)
+  gdppc_mean = mean(gdppc_i$value, na.rm = T)
+  gdppc_rate = (gdppc_i[6, ]$value / gdppc_i[1, ]$value) ^ (1 / 5)
+  project_var_envir[i, ]$gdppc_mean = gdppc_mean
+  project_var_envir[i, ]$gdppc_rate = gdppc_rate
+}
 
-project_var_gdppc = merge(project_var_envir, gdppc, by = "country", all.x = T)
-project_var_complete = merge(project_var_gdppc, wgi, by = "country", all.x = T) %>%
-  arrange(code)
-write.csv(project_var_complete, paste0(out_path, "_project_var_complete.csv"), row.names = F)
+
+#Average and annual compound growth rate of  World Governance Index Control of Corruption indicator five years prior to project start
+wgicc = read.csv("/maps/epr26/wgidataset.csv", header = T) %>%
+  filter(indicator == "cc") %>%
+  mutate(estimate = as.numeric(estimate))
+
+project_var_envir$wgicc_mean = NA
+for(i in seq_along(project_var_envir$ID)) {
+  country_i = project_var_envir[i, ]$country
+  t0_i = project_var_envir[i, ]$t0
+  wgicc_i = subset(wgicc, countryname == country_i & year <= t0_i & year >= t0_i - 5)
+  project_var_envir[i, ]$wgicc_mean = mean(wgicc_i$estimate, na.rm = T)
+}
+
+project_var_envir = project_var_envir %>%
+  dplyr::select(!wgicc_rate)
+
+write.csv(project_var_envir, paste0(out_path, "_project_var_complete.csv"), row.names = F)
 
 
 #retrieve carbon time series for project pixel subsamples and matched pixels
