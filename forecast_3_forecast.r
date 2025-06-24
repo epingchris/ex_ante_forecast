@@ -213,7 +213,7 @@ for(var in c("r2", "mae", "bias")) {
   y_label = switch(var,
              "r2" = expression(R^2),
              "mae" = expression(MAE),
-             "bias" = expression(bias))
+             "bias" = expression(Bias))
 
   forecast_aggr_summ = forecast_aggr %>%
     dplyr::select(any_of(c("type", var, "year"))) %>%
@@ -228,7 +228,7 @@ for(var in c("r2", "mae", "bias")) {
 
   figure5_list[[var]] = ggplot(data = forecast_aggr_summ, aes(x = year, y = mean)) +
     geom_line(aes(color = type), linewidth = 2) +
-    geom_ribbon(aes(ymin = min, ymax = max, fill = type), alpha = 0.2) +
+    geom_ribbon(aes(ymin = min, ymax = max, fill = type), alpha = 0.1) +
     scale_color_manual(values = c("#40B0A6", "#CDAC60", "#9467BD")) +
     scale_fill_manual(values = c("#40B0A6", "#CDAC60", "#9467BD")) +
     scale_x_continuous(breaks = 1:10, labels = 1:10) +
@@ -237,13 +237,13 @@ for(var in c("r2", "mae", "bias")) {
          color = "Forecast type", fill = "Forecast type") +
     theme_bw() +
     theme(panel.grid = element_blank(),
-          plot.title = element_text(size = 26, hjust = 0.5),
-          axis.title = element_text(size = 24),
-          axis.text = element_text(size = 22),
+          plot.title = element_text(size = 28, hjust = 0.5),
+          axis.title = element_text(size = 26),
+          axis.text = element_text(size = 24),
           axis.ticks = element_line(linewidth = 1),
           axis.ticks.length = unit(0.2, "cm"),
-          legend.title = element_text(size = 24),
-          legend.text = element_text(size = 22),
+          legend.title = element_text(size = 26),
+          legend.text = element_text(size = 24),
           legend.key.size = unit(1.5, "cm"))
 }
 
@@ -290,60 +290,14 @@ View(filter(forecast_aggr_rank, rank_sum_10 <= 12))
 View(filter(forecast_aggr_rank, rank_sum_tot <= 12))
 #best forecast: mixed with project_used = -10 and region_used = -10
 
-#Figure S3. Best historical periods for simple forecasts
-forecast_smp_summ_yr = rbind(forecast_prj_summ_yr, forecast_reg_summ_yr)
-axis_label_hist = expression(paste("Start of historical period (years before ", italic(t[0]), ")", sep = ""))
-ggplot(data = forecast_smp_summ_yr, aes(x = year_used, y = r2_closs, color = type)) +
-  geom_line(linewidth = 2) +
-  scale_color_manual(values = c("#40B0A6", "#CDAC60")) +
-  scale_x_continuous(breaks = -10:-1, labels = 10:1, expand = c(0, 0)) +
-  labs(title = "Simple forecasts", x = axis_label_hist, y = expression(R^2),
-       color = "Forecast type") +
-  theme_bw() +
-  theme(panel.grid = element_blank(),
-        panel.border = element_blank(),
-        panel.spacing = unit(0, "cm"),
-        plot.title = element_text(size = 24, hjust = 0.5),
-        axis.title = element_text(size = 22),
-        axis.text = element_text(size = 20),
-        axis.ticks = element_blank(),
-        legend.title = element_text(size = 22),
-        legend.text = element_text(size = 20),
-        legend.key.size = unit(1.5, "cm"))
-ggsave(paste0(fig_path, "figure_s3_historical_period_smp.png"),
-        width = 35, height = 30, unit = "cm")
-
-#Figure 6. Average R2 for all combinations of historical periods for the mixed forecasting approach
-ggplot(data = forecast_mix_summ_yr, aes(x = project_used, y = region_used, fill = r2_closs)) +
-  geom_tile() +
-  geom_tile(data = r2_top10, aes(x = project_used, y = region_used, fill = r2_closs), color = "white", linewidth = 2, alpha = 0, width = 1, height = 1) +
-  geom_tile(data = r2_max, aes(x = project_used, y = region_used, fill = r2_closs), color = "red", linewidth = 2, alpha = 0, width = 1, height = 1) +
-  scale_fill_gradient(limits = c(0, 0.75), breaks = seq(0, 0.75, 0.25), low = "black", high = "#9467BD") +
-  scale_x_continuous(breaks = -10:-1, labels = 10:1, expand = c(0, 0)) +
-  scale_y_continuous(breaks = -10:-1, labels = 10:1, expand = c(0, 0)) +
-  geom_text(aes(label = round(r2_closs, 3)), color = "white", size = 6.5) +
-  labs(title = "Mixed forecasts", x = axis_label_prj, y = axis_label_reg,
-       fill = expression(paste("Average ", R^2, sep = ""))) +
-  theme_bw() +
-  theme(panel.grid = element_blank(),
-        panel.border = element_blank(),
-        panel.spacing = unit(0, "cm"),
-        plot.title = element_text(size = 24, hjust = 0.5),
-        axis.title = element_text(size = 22),
-        axis.text = element_text(size = 20),
-        axis.ticks = element_blank(),
-        legend.title = element_text(size = 22),
-        legend.text = element_text(size = 20),
-        legend.key.size = unit(1.5, "cm"))
-ggsave(paste0(fig_path, "figure_6_r2_closs_historical_period_mix.png"),
-        width = 35, height = 30, unit = "cm")
+table_1 = forecast_aggr_rank %>%
+  filter(rank_sum_rank_tot <= 12) %>%
+  dplyr::select(project_used, region_used, type, r2_5, r2_10, mae_5, mae_10, bias_5, bias_10, rank_sum_rank_tot) %>%
+  arrange(rank_sum_rank_tot)
+write.csv(table_1, paste0(fig_path, "table_1.csv"), row.names = F)
 
 
-#Build a model to predict additionality over five-year and ten-year intervals
-forecast_best = forecast_mix %>%
-  filter(project_used == -10 & region_used == -10 & year == 5) %>%
-  dplyr::select(!c(project_used, region_used, obs_cf_closs, year, type))
-
+#Linear model to predict carbon credit production over five-year and ten-year target periods
 envir_var = project_var %>%
   dplyr::select(!c(country, t0, code) & !starts_with("cdens"))
 envir_var_cor = cor(envir_var %>% dplyr::select(!ID))
@@ -356,58 +310,75 @@ envir_var = project_var %>%
 envir_var_cor = cor(envir_var %>% dplyr::select(!ID))
 corrplot(envir_var_cor, type = "lower", order = "hclust", addCoef.col = "black", diag = F)
 
+forecast_best = forecast_mix %>%
+  filter(project_used == -10 & region_used == -10 & year %in% c(5, 10)) %>%
+  dplyr::select(!c(project_used, region_used, obs_cf_closs, type))
+
 forecast_var = left_join(forecast_best, envir_var, join_by(project == ID))
-forecast_var_scaled = as.data.frame(scale(forecast_var))
+forecast_var_scale = forecast_var %>%
+  mutate_at(3:10, scale)
 
-forecast_lm = lm(obs_add ~ . - project, data = forecast_var_scaled)
-summary(forecast_lm) #adjusted R2 = 0.708
-stepAIC(forecast_lm, direction = "backward", trace = 1)
-#backward selection dropped WGICC (corruption index)
-forecast_lm_sel = lm(obs_add ~ forecast + area_ha + prj_slope + gdppc_mean, data = forecast_var_scaled)
-#only prj_remote is not significant
-summary(forecast_lm_sel) #adjusted R2 = 0.7381
-R2_full = summary(forecast_lm_sel)$adj.r.squared #adjusted R2 = 0.745
-lm_coef = coef(forecast_lm_sel)
+plots = vector("list", 2)
+overall_summary = vector("list", 2)
+for(i in 1:2) {
+  yr_sel = c(5, 10)[i]
+  figtitle = c("A. Five-year prediction", "B. Ten-year prediction")[i]
+  data_sel = subset(forecast_var_scale, year == yr_sel)
 
-#MAE
-predictions = predict(forecast_lm_sel)
-actuals = forecast_lm_sel$model$obs_add # or your original y variable
-(mae = mean(abs(predictions - actuals))) #0.336
+  forecast_lm = lm(obs_add ~ . - project, data = data_sel)
+  forecast_lm_sel = stepAIC(forecast_lm, direction = "backward", trace = 1) #dropped wgicc_mean, gdppc_rate, prj_remote
+  lm_coef = coef(forecast_lm_sel)
+  #Calculate Perform variance partitioning on historical forecast, project area, average slope, and GDP
+  R2_full = summary(forecast_lm_sel)$adj.r.squared #adjusted R2 = 0.745
+  vars = attr(terms(forecast_lm_sel), "term.labels")
+  for(var_i in vars) {
+    vars_new = setdiff(vars, var_i)
+    new_formula = reformulate(vars_new, response = "obs_add")
+    forecast_lm_min = lm(new_formula, data = data_sel)
+    R2_incremental = R2_full - summary(forecast_lm_min)$adj.r.squared
+    cat(var_i, ":", round(R2_incremental, 3), "\n")
+  }
 
-#
-mean(forecast_lm_sel$residuals)
+  #MAE
+  forecast_mae = mean(abs(predict(forecast_lm_sel) - forecast_lm_sel$model$obs_add))
 
-#Perform variance partitioning on historical forecast, project area, average slope, and GDP
-forecast_lm_min_forecast = lm(obs_add ~ area_ha + prj_slope + gdppc_mean, data = forecast_var_scaled)
-forecast_lm_min_area = lm(obs_add ~ forecast + prj_slope + gdppc_mean, data = forecast_var_scaled)
-forecast_lm_min_slope = lm(obs_add ~ forecast + area_ha + gdppc_mean, data = forecast_var_scaled)
-forecast_lm_min_gdppc = lm(obs_add ~ forecast + area_ha + prj_slope, data = forecast_var_scaled)
-(R2_forecast = R2_full - summary(forecast_lm_min_forecast)$adj.r.squared) #0.766
-(R2_area = R2_full - summary(forecast_lm_min_area)$adj.r.squared) #0.086
-(R2_slope = R2_full - summary(forecast_lm_min_slope)$adj.r.squared) #0.237
-(R2_gdp = R2_full - summary(forecast_lm_min_gdppc)$adj.r.squared) #0.116
+  #leave-one-out jackknife predictive bias
+  bias = rep(NA, 20)
+  for(j in 1:20) {
+    forecast_lm_jk = lm(formula(forecast_lm_sel), data = data_sel[-j, ])
+    pred_val = predict(forecast_lm_jk, data_sel[i, ], interval = "confidence")
+    bias[j] = pred_val[, "fit"] - data_sel[j, ]$obs_add
+  }
 
-#Compare observed vs forecasted for the best forecast
-ggplot(data = forecast_var) +
-  geom_point(aes(x = forecast, y = obs_add)) +
-  geom_abline(intercept = 0, slope = 1, linetype = "dashed") +
-  labs(title = "Forecasts for a five-year target period",
-       x = bquote(paste("Forecasted carbon credit generation rate (MgC ", ha^-1, " ", yr^-1, ")")),
-       y = bquote(paste("Observed carbon credit generation rate (MgC ", ha^-1, " ", yr^-1, ")"))) +
-  scale_x_continuous(limits = c(0, 1.5), breaks = seq(0, 1.5, 0.25)) +
-  scale_y_continuous(limits = c(0, 1.5), breaks = seq(0, 1.5, 0.25)) +
-  theme_bw() +
-  theme(panel.grid = element_blank(),
-        panel.spacing = unit(0, "cm"),
-        plot.title = element_text(size = 28, hjust = 0.5),
-        axis.title = element_text(size = 24),
-        axis.text = element_text(size = 20),
-        axis.ticks = element_blank(),
-        legend.title = element_text(size = 24),
-        legend.text = element_text(size = 20),
-        legend.key.size = unit(1.5, "cm"))
-ggsave(paste0(fig_path, "figure6_observed_vs_forecasted_best.png"),
-        width = 35, height = 30, unit = "cm")
+  overall_summary[[i]] = data.frame(year = yr_sel, R2 = R2_full, mae = forecast_mae, bias = mean(bias, na.rm = T))
+
+  #Plot observed carbon credit production vs forecast of counterfactual carbon loss
+  plots[[i]] = ggplot(data = subset(forecast_var, year == yr_sel)) +
+    geom_point(aes(x = forecast, y = obs_add)) +
+    geom_abline(intercept = 0, slope = 1, linetype = "dashed") +
+    labs(title = figtitle,
+        x = bquote(paste("Forecasted carbon credit production (MgC ", ha^-1, " ", yr^-1, ")")),
+        y = bquote(paste("Observed carbon credit production (MgC ", ha^-1, " ", yr^-1, ")"))) +
+    scale_x_continuous(limits = c(0, 1.5), breaks = seq(0, 1.5, 0.25)) +
+    scale_y_continuous(limits = c(0, 1.5), breaks = seq(0, 1.5, 0.25)) +
+    theme_bw() +
+    theme(panel.grid = element_blank(),
+          panel.spacing = unit(0, "cm"),
+          plot.title = element_text(size = 28, hjust = 0.5),
+          axis.title = element_text(size = 24),
+          axis.text = element_text(size = 20),
+          axis.ticks = element_blank(),
+          legend.title = element_text(size = 24),
+          legend.text = element_text(size = 20),
+          legend.key.size = unit(1.5, "cm"))
+}
+
+overall_summary_df = list_rbind(overall_summary)
+plot_all = plots[[1]] + plots[[2]] +
+  plot_layout(axes = "collect", axis_titles = "collect")
+ggsave(paste0(fig_path, "figure6_observed_vs_forecasted.png"), width = 60, height = 30, unit = "cm")
+
+
 
 # Supplementary: se GAM to look at how forecast r2 changes with forecasting parameters ----
 forecast_gam = mgcv::gam(r2 ~ s(project_used, bs = "tp", k = 10) +
