@@ -1,7 +1,7 @@
 # This script generates a dataframe containing the information needed for subsequent analysis and saves it in out_path
 # The dataframe contains the following columns:
 # ID: project ID
-# COUNTRY: project country
+# country: project country
 # t0: project start year
 # area_ha: project area in hectares
 # cdens_1 to cdens_6: carbon density (MgC ha-1) per land class
@@ -36,7 +36,8 @@ out_path = paste0("/maps/epr26/ex_ante_forecast_out/out_", analysis_type) #path 
 if(analysis_type == "ongoing") {
   #load basic information (csv file copied from Tom's directory)
   proj_info = read.csv("proj_meta.csv") %>%
-    dplyr::select(ID, COUNTRY, t0)
+    dplyr::select(ID, COUNTRY, t0) %>%
+    rename(country = COUNTRY)
 
   #define include and exclude strings
   include_strings = NULL
@@ -45,7 +46,8 @@ if(analysis_type == "ongoing") {
 } else if(analysis_type == "placebo") {
   #load basic information
   proj_info = read.csv("proj_meta_placebo.csv") %>%
-    dplyr::select(ID, COUNTRY, t0)
+    dplyr::select(ID, COUNTRY, t0) %>%
+    rename(country = COUNTRY)
 
   #define include and exclude strings
   include_strings = c("asn", "af", "sa")

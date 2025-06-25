@@ -1,5 +1,6 @@
 *.png
 *.csv
+*.log
 sandbox.r
 ofir.r
 compare_eping_jody.r
