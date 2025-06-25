@@ -316,7 +316,8 @@ forecast_best = forecast_mix %>%
 
 forecast_var = left_join(forecast_best, envir_var, join_by(project == ID))
 forecast_var_scale = forecast_var %>%
-  mutate_at(3:10, scale)
+  relocate(forecast, .after = "obs_add") %>%
+  mutate_at(4:10, scale)
 
 plots = vector("list", 2)
 overall_summary = vector("list", 2)
@@ -327,6 +328,12 @@ for(i in 1:2) {
 
   forecast_lm = lm(obs_add ~ . - project, data = data_sel)
   forecast_lm_sel = stepAIC(forecast_lm, direction = "backward", trace = 1) #dropped wgicc_mean, gdppc_rate, prj_remote
+
+  png(paste0(fig_path, "figure6_diagnostic_", yr_sel, ".png"), width = 600, height = 600)
+  par(mfrow = c(2, 2))
+  plot(forecast_lm_sel)
+  dev.off()
+
   lm_coef = coef(forecast_lm_sel)
   #Calculate Perform variance partitioning on historical forecast, project area, average slope, and GDP
   R2_full = summary(forecast_lm_sel)$adj.r.squared #adjusted R2 = 0.745
@@ -340,7 +347,8 @@ for(i in 1:2) {
   }
 
   #MAE
-  forecast_mae = mean(abs(predict(forecast_lm_sel) - forecast_lm_sel$model$obs_add))
+  forecast_df = data.frame(predict = predict(forecast_lm_sel), observed = forecast_lm_sel$model$obs_add)
+  forecast_mae = mean(abs(forecast_df$predict - forecast_df$observed))
 
   #leave-one-out jackknife predictive bias
   bias = rep(NA, 20)
@@ -349,34 +357,39 @@ for(i in 1:2) {
     pred_val = predict(forecast_lm_jk, data_sel[i, ], interval = "confidence")
     bias[j] = pred_val[, "fit"] - data_sel[j, ]$obs_add
   }
+  forecast_bias = mean(bias, na.rm = T)
 
-  overall_summary[[i]] = data.frame(year = yr_sel, R2 = R2_full, mae = forecast_mae, bias = mean(bias, na.rm = T))
+  overall_summary[[i]] = data.frame(year = yr_sel, R2 = R2_full, mae = forecast_mae, bias =forecast_bias)
 
   #Plot observed carbon credit production vs forecast of counterfactual carbon loss
-  plots[[i]] = ggplot(data = subset(forecast_var, year == yr_sel)) +
-    geom_point(aes(x = forecast, y = obs_add)) +
+  plots[[i]] = ggplot(data = forecast_df) +
+    geom_point(aes(x = predict, y = observed), size = 3) +
     geom_abline(intercept = 0, slope = 1, linetype = "dashed") +
+    annotate(geom = "text", x = 1, y = 0.4, size = 10,
+             label = bquote(paste(R^2, " = ", .(round(R2_full, 3))))) +
+    annotate(geom = "text", x = 1, y = 0.3, size = 10,
+             label = bquote(paste("MAE: ", .(round(forecast_mae, 3))))) +
+    annotate(geom = "text", x = 1, y = 0.2, size = 10,
+             label = bquote(paste("Bias: ", .(round(forecast_bias, 3))))) +
     labs(title = figtitle,
-        x = bquote(paste("Forecasted carbon credit production (MgC ", ha^-1, " ", yr^-1, ")")),
-        y = bquote(paste("Observed carbon credit production (MgC ", ha^-1, " ", yr^-1, ")"))) +
+         x = bquote(paste("Forecasted carbon credit production (MgC ", ha^-1, " ", yr^-1, ")")),
+         y = bquote(paste("Observed carbon credit production (MgC ", ha^-1, " ", yr^-1, ")"))) +
     scale_x_continuous(limits = c(0, 1.5), breaks = seq(0, 1.5, 0.25)) +
     scale_y_continuous(limits = c(0, 1.5), breaks = seq(0, 1.5, 0.25)) +
     theme_bw() +
     theme(panel.grid = element_blank(),
           panel.spacing = unit(0, "cm"),
-          plot.title = element_text(size = 28, hjust = 0.5),
-          axis.title = element_text(size = 24),
-          axis.text = element_text(size = 20),
+          plot.title = element_text(size = 32, hjust = 0.5),
+          axis.title = element_text(size = 28),
+          axis.text = element_text(size = 24),
           axis.ticks = element_blank(),
-          legend.title = element_text(size = 24),
-          legend.text = element_text(size = 20),
-          legend.key.size = unit(1.5, "cm"))
+          axis.line = element_line(color = "black"))
 }
 
 overall_summary_df = list_rbind(overall_summary)
 plot_all = plots[[1]] + plots[[2]] +
   plot_layout(axes = "collect", axis_titles = "collect")
-ggsave(paste0(fig_path, "figure6_observed_vs_forecasted.png"), width = 60, height = 30, unit = "cm")
+ggsave(paste0(fig_path, "figure6_observed_vs_forecasted.png"), width = 45, height = 30, unit = "cm")
 
 
 
