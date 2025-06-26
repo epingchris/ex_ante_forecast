@@ -319,61 +319,102 @@ forecast_var_scale = forecast_var %>%
   relocate(forecast, .after = "obs_add") %>%
   mutate_at(4:10, scale)
 
-plots = vector("list", 2)
-overall_summary = vector("list", 2)
+plots_optim = vector("list", 2)
+plots_simpl = vector("list", 2)
+effects = vector("list", 2)
 for(i in 1:2) {
   yr_sel = c(5, 10)[i]
-  figtitle = c("A. Five-year prediction", "B. Ten-year prediction")[i]
-  data_sel = subset(forecast_var_scale, year == yr_sel)
+  figtitle = c("Five-year prediction", "Ten-year prediction")[i]
+  lm_data = subset(forecast_var_scale, year == yr_sel)
 
-  forecast_lm = lm(obs_add ~ . - project, data = data_sel)
-  forecast_lm_sel = stepAIC(forecast_lm, direction = "backward", trace = 1) #dropped wgicc_mean, gdppc_rate, prj_remote
+  forecast_lm = lm(obs_add ~ . - project, data = lm_data) #full model
+  forecast_lm_optim = stepAIC(forecast_lm, direction = "backward", trace = 1) #selected model: dropped wgicc_mean, gdppc_rate, prj_remote
+  forecast_lm_simpl = lm(obs_add ~ forecast, data = lm_data) #simplistic model with only forecast of counterfactual carbon loss
+  R2_optim = summary(forecast_lm_optim)$adj.r.squared #adjusted R2 = 0.745
+  R2_simpl = summary(forecast_lm_simpl)$adj.r.squared #adjusted R2 = 0.479
 
   png(paste0(fig_path, "figure6_diagnostic_", yr_sel, ".png"), width = 600, height = 600)
   par(mfrow = c(2, 2))
-  plot(forecast_lm_sel)
+  plot(forecast_lm_optim)
   dev.off()
 
-  lm_coef = coef(forecast_lm_sel)
-  #Calculate Perform variance partitioning on historical forecast, project area, average slope, and GDP
-  R2_full = summary(forecast_lm_sel)$adj.r.squared #adjusted R2 = 0.745
-  vars = attr(terms(forecast_lm_sel), "term.labels")
+  #Gather information on individual predictors
+  effects[[i]] = as.data.frame(summary(forecast_lm_optim)$coefficients)
+
+  #information on intercept
+  incr_r2 = NA
+
+  #information on other predictors
+  vars = attr(terms(forecast_lm_optim), "term.labels")
   for(var_i in vars) {
     vars_new = setdiff(vars, var_i)
     new_formula = reformulate(vars_new, response = "obs_add")
-    forecast_lm_min = lm(new_formula, data = data_sel)
-    R2_incremental = R2_full - summary(forecast_lm_min)$adj.r.squared
-    cat(var_i, ":", round(R2_incremental, 3), "\n")
+    forecast_lm_min = lm(new_formula, data = lm_data)
+    incr_r2 = c(incr_r2, R2_optim - summary(forecast_lm_min)$adj.r.squared)
   }
+  effects[[i]]$incr_r2 = incr_r2
+
+  orig_data = forecast_var %>%
+    filter(year == yr_sel & !if_any(everything(), is.na))
 
   #MAE
-  forecast_df = data.frame(predict = predict(forecast_lm_sel), observed = forecast_lm_sel$model$obs_add)
-  forecast_mae = mean(abs(forecast_df$predict - forecast_df$observed))
+  forecast_df = data.frame(pred_optim = predict(forecast_lm_optim), pred_simpl = orig_data$forecast, observed = orig_data$obs_add)
+  mae_optim = mean(abs(forecast_df$pred_optim - forecast_df$observed))
+  mae_simpl = mean(abs(forecast_df$pred_simpl - forecast_df$observed))
+
+  mean_bias_optim = mean(forecast_df$pred_optim - forecast_df$observed)
+  mean_bias_simpl = mean(forecast_df$pred_simpl - forecast_df$observed)
 
   #leave-one-out jackknife predictive bias
-  bias = rep(NA, 20)
-  for(j in 1:20) {
-    forecast_lm_jk = lm(formula(forecast_lm_sel), data = data_sel[-j, ])
-    pred_val = predict(forecast_lm_jk, data_sel[i, ], interval = "confidence")
-    bias[j] = pred_val[, "fit"] - data_sel[j, ]$obs_add
-  }
-  forecast_bias = mean(bias, na.rm = T)
+  # bias_optim = rep(NA, 20)
+  # for(j in 1:20) {
+  #   forecast_lm_optim_jk = lm(formula(forecast_lm_optim), data = lm_data[-j, ])
+  #   pred_val = predict(forecast_lm_optim_jk, lm_data[i, ], interval = "confidence")
+  #   bias_optim[j] = pred_val[, "fit"] - lm_data$obs_add[j]
+  # }
+  # mean_bias_optim = mean(bias_optim, na.rm = T)
 
-  overall_summary[[i]] = data.frame(year = yr_sel, R2 = R2_full, mae = forecast_mae, bias =forecast_bias)
-
-  #Plot observed carbon credit production vs forecast of counterfactual carbon loss
-  plots[[i]] = ggplot(data = forecast_df) +
-    geom_point(aes(x = predict, y = observed), size = 3) +
+  #Plot selected model (observed carbon credit production vs predicted carbon credit production)
+  plots_optim[[i]] = ggplot(data = forecast_df) +
+    geom_point(aes(x = pred_optim, y = observed), size = 3) +
     geom_abline(intercept = 0, slope = 1, linetype = "dashed") +
     annotate(geom = "text", x = 1, y = 0.4, size = 10,
-             label = bquote(paste(R^2, " = ", .(round(R2_full, 3))))) +
+             label = bquote(paste(R^2, " = ", .(round(R2_optim, 3))))) +
     annotate(geom = "text", x = 1, y = 0.3, size = 10,
-             label = bquote(paste("MAE: ", .(round(forecast_mae, 3))))) +
+             label = bquote(paste("MAE: ", .(round(mae_optim, 3))))) +
     annotate(geom = "text", x = 1, y = 0.2, size = 10,
-             label = bquote(paste("Bias: ", .(round(forecast_bias, 3))))) +
+             label = bquote(paste("Bias: ", .(round(mean_bias_optim, 3))))) +
     labs(title = figtitle,
-         x = bquote(paste("Forecasted carbon credit production (MgC ", ha^-1, " ", yr^-1, ")")),
-         y = bquote(paste("Observed carbon credit production (MgC ", ha^-1, " ", yr^-1, ")"))) +
+         x = bquote(paste("Predicted carbon credit production (MgC ", ha^-1, " ", yr^-1, ")")),
+         y = "") +
+#         y = bquote(paste("Observed carbon credit production (MgC ", ha^-1, " ", yr^-1, ")"))) +
+    scale_x_continuous(limits = c(0, 1.5), breaks = seq(0, 1.5, 0.25)) +
+    scale_y_continuous(limits = c(0, 1.5), breaks = seq(0, 1.5, 0.25)) +
+    theme_bw() +
+    theme(panel.grid = element_blank(),
+          panel.spacing = unit(0, "cm"),
+          plot.title = element_text(size = 32, hjust = 0.5),
+          axis.title.x = element_blank(),
+          axis.text.x = element_blank(),
+          axis.title.y = element_text(size = 28),
+          axis.text.y = element_text(size = 24),
+          axis.ticks = element_blank(),
+          axis.line = element_line(color = "black"))
+
+  #Plot simplistic model (observed carbon credit production vs forecast of counterfactual carbon loss)
+  plots_simpl[[i]] = ggplot(data = forecast_df) +
+    geom_point(aes(x = pred_simpl, y = observed), size = 3) +
+    geom_abline(intercept = 0, slope = 1, linetype = "dashed") +
+    annotate(geom = "text", x = 1, y = 0.4, size = 10,
+             label = bquote(paste(R^2, " = ", .(round(R2_simpl, 3))))) +
+    annotate(geom = "text", x = 1, y = 0.3, size = 10,
+             label = bquote(paste("MAE: ", .(round(mae_simpl, 3))))) +
+    annotate(geom = "text", x = 1, y = 0.2, size = 10,
+             label = bquote(paste("Bias: ", .(round(mean_bias_simpl, 3))))) +
+    labs(title = figtitle,
+         x = bquote(paste("Predicted carbon credit production (MgC ", ha^-1, " ", yr^-1, ")")),
+         y = "") +
+#         y = bquote(paste("Observed carbon credit production (MgC ", ha^-1, " ", yr^-1, ")"))) +
     scale_x_continuous(limits = c(0, 1.5), breaks = seq(0, 1.5, 0.25)) +
     scale_y_continuous(limits = c(0, 1.5), breaks = seq(0, 1.5, 0.25)) +
     theme_bw() +
@@ -386,10 +427,25 @@ for(i in 1:2) {
           axis.line = element_line(color = "black"))
 }
 
-overall_summary_df = list_rbind(overall_summary)
-plot_all = plots[[1]] + plots[[2]] +
+
+plot_optim_all = plots_optim[[1]] + plots_optim[[2]] +
   plot_layout(axes = "collect", axis_titles = "collect")
-ggsave(paste0(fig_path, "figure6_observed_vs_forecasted.png"), width = 45, height = 30, unit = "cm")
+plot_optim_title = wrap_elements(grid::textGrob("A. Selected model", gp = gpar(fontsize = 36, fontface = "bold")))
+plot_simpl_all = plots_simpl[[1]] + plots_simpl[[2]] +
+  plot_layout(axes = "collect", axis_titles = "collect")
+plot_simpl_title = wrap_elements(grid::textGrob("B. Simplistic model", gp = gpar(fontsize = 36, fontface = "bold")))
+
+plot_all = plot_optim_title / plot_optim_all / plot_simpl_title / plot_simpl_all +
+  plot_layout(height = c(0.15, 1, 0.15, 1))
+title_y = wrap_elements(grid::textGrob(bquote(paste("Observed carbon credit production (MgC ", ha^-1, " ", yr^-1, ")")),
+                                       rot = 90, gp = gpar(fontsize = 28)))
+plot_all = title_y + plot_all +
+  plot_layout(width = c(0.02, 1))
+plot_all
+ggsave(paste0(fig_path, "figure6_observed_vs_forecasted.png"), width = 50, height = 50, unit = "cm")
+
+#ggsave(paste0(fig_path, "figure6a_observed_vs_forecasted_optim.png"), width = 60, height = 30, unit = "cm")
+#ggsave(paste0(fig_path, "figure6b_observed_vs_forecasted_simpl.png"), width = 60, height = 30, unit = "cm")
 
 
 
