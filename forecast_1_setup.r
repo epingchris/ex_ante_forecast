@@ -31,6 +31,8 @@ source("FindFiles.r") #wrapper function to search files or folders based on incl
 analysis_type = "ongoing" #analysis type
 project_dir = "/maps/epr26/tmf_pipe_out/" #path to directories containing implementation outputs
 polygon_dir = "/maps/epr26/tmf-data/projects/" #path to polygons
+cdens_dir = "/maps/epr26/tmf_pipe_out/cdens_new/" #path to newly generated carbon density tables with SE
+
 out_path = paste0("/maps/epr26/ex_ante_forecast_out/out_", analysis_type) #path to store script output
 
 if(analysis_type == "ongoing") {
@@ -57,25 +59,37 @@ if(analysis_type == "ongoing") {
 #Find directories containing implementation outputs and save project names in vector "projects"
 projects = FindFiles(project_dir, include = include_strings, exclude = exclude_strings)
 
+#Sort by project ID
+if(analysis_type == "ongoing") {
+  projects = projects %>%
+    as.numeric() %>%
+    sort()
+} else {
+  projects = projects %>%
+    sort()
+}
+
 #Retrieve data frames containing carbon density (MgC/ha) per LUC
-cdens_paths = rep(NA, length(projects))
 cdens_list = vector("list", length(projects))
 for(i in seq_along(projects)) {
-  cdens_path = FindFiles(paste0(project_dir, projects[i]), "carbon-density", full = T)
+  cdens_path = FindFiles(cdens_dir, paste0(projects[i], "_carbon_density"), full = T)
   if(!is.na(cdens_path)) {
-    cdens = read.csv(cdens_path)[, 1:2] #use only the second column as carbon density value
-    colnames(cdens) = c("land.use.class", "carbon.density")
+    cdens = read.csv(cdens_path) %>%
+      dplyr::select(-any_of("n"))
+    colnames(cdens) = c("luc", "cdens", "se")
     for(class in 1:6) {
-      if(class %in% cdens$land.use.class == F) cdens = rbind(cdens, c(class, NA))
+      if(class %in% cdens$luc == F) cdens = rbind(cdens, c(class, NA, NA))
     }
-    cdens_list[[i]] = cdens[order(cdens$land.use.class), ] #order land class from 1 to 6
-    cdens_paths[i] = cdens_path
+    cdens = cdens %>%
+      arrange(luc) %>% #order land class from 1 to 6
+      mutate(project = projects[i])
+    cdens_list[[i]] = cdens
   }
 }
 names(cdens_list) = projects
 
 #Check if carbon density values for LUC 1, 2, 3, and 4 are available
-is_carbon_complete = sapply(cdens_list, function(x) !is.na(sum(x[1:4, ]$carbon.density)))
+is_carbon_complete = sapply(cdens_list, function(x) !is.na(sum(x[1:4, ]$cdens)))
 
 #Check if pairs parquet files are present (indicating complete output)
 is_done = sapply(projects, function(x) FindFiles(paste0(project_dir, x, "/pairs"), ".parquet") %>% length() == 200)
@@ -100,25 +114,20 @@ project_var$area_ha = sapply(seq_along(projects), function(i) {
 })
 
 #Retrieve carbon density
-cdens_df = cdens_list %>%
-  imap(function(.x, .y) { #map list element name to new column
-    .x %>%
-      mutate(project = .y) %>%
-      filter(land.use.class != 0) %>% #land use class 0 doesn't mean anything
-      pivot_wider(names_from = land.use.class, values_from = carbon.density, names_prefix = "cdens_")
+cdens_df = lapply(cdens_list, function(x) {
+  if(!is.null(x)) {
+    x = x %>%
+      filter(luc %in% 1:6) %>%
+      pivot_wider(names_from = luc, values_from = cdens:se)
+  } else {
+    x = NULL
+  }
   }) %>%
   list_rbind()
 project_var = merge(project_var, cdens_df, by.x = "ID", by.y = "project")
 
-#Sort rows by project ID
-if(analysis_type == "ongoing") {
-  project_var = project_var %>%
-    arrange(as.numeric(ID)) %>%
-    mutate(code = LETTERS[1:nrow(project_var)])
-} else {
-  project_var = project_var %>%
-    arrange(ID)
-}
+#Add anonymous project code
+project_var$code = LETTERS[1:nrow(project_var)]
 
 #Output: project status check results
 write.csv(projects_status, paste0(out_path, "_project_status.csv"), row.names = F)
