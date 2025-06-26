@@ -131,9 +131,6 @@ write.csv(project_var_envir, paste0(out_path, "_project_var_complete.csv"), row.
 #retrieve carbon time series for project pixel subsamples and matched pixels
 for(i in seq_along(projects)) {
   t0 = t0_vec[i]
-  luc_t_20 = paste0("luc_", t0_vec[i] - 20)
-  luc_t_10 = paste0("luc_", t0_vec[i] - 10)
-  luc_t0 = paste0("luc_", t0_vec[i])
   area_ha = area_ha_vec[i]
   cdens = cdens_list[[i]]
   pair_dir = paste0(parquet_dirs[i], "/pairs/")
