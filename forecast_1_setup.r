@@ -1,11 +1,13 @@
-# This script generates a dataframe containing the information needed for subsequent analysis and saves it in out_path
+# This script generates a dataframe containing the information needed for subsequent analysis and saves it as out_path/project_var.csv
 # The dataframe contains the following columns:
+# code: anonymised project code (for ongoing projects)
 # ID: project ID
 # country: project country
 # t0: project start year
 # area_ha: project area in hectares
-# cdens_1 to cdens_6: carbon density (MgC ha-1) per land class
-# code (for ongoing projects): anonymised project code
+# cdens_1 to cdens_6: reference carbon density (MgC ha-1) per land class
+# n_1 to n_6: number of GEDI beams used to calculate reference carbon density per land class
+# se_1 to se_6: standard error of reference carbon density per land class
 
 # It requires the following inputs:
 #1. analysis_type: "ongoing" for ongoing projects; "placebo" for placebo projects
@@ -23,6 +25,7 @@ library(tidyverse) #stringr::str_subset used in FindFiles.r, dplyr used througho
 library(magrittr) #pipe operators
 library(units) #set_units()
 library(sf) #st_drop_geometry() (runs on GDAL 3.10)
+library(arrow) #read_parquet()
 
 #Load pre-defined functions
 source("FindFiles.r") #wrapper function to search files or folders based on inclusion/exclusion keywords
@@ -74,11 +77,10 @@ cdens_list = vector("list", length(projects))
 for(i in seq_along(projects)) {
   cdens_path = FindFiles(cdens_dir, paste0(projects[i], "_carbon_density"), full = T)
   if(!is.na(cdens_path)) {
-    cdens = read.csv(cdens_path) %>%
-      dplyr::select(-any_of("n"))
-    colnames(cdens) = c("luc", "cdens", "se")
+    cdens = read.csv(cdens_path)
+    colnames(cdens) = c("luc", "cdens", "n", "se")
     for(class in 1:6) {
-      if(class %in% cdens$luc == F) cdens = rbind(cdens, c(class, NA, NA))
+      if(class %in% cdens$luc == F) cdens = rbind(cdens, c(class, NA, NA, NA))
     }
     cdens = cdens %>%
       arrange(luc) %>% #order land class from 1 to 6
@@ -124,14 +126,65 @@ cdens_df = lapply(cdens_list, function(x) {
   }
   }) %>%
   list_rbind()
-project_var = merge(project_var, cdens_df, by.x = "ID", by.y = "project")
+project_var = merge(project_var, cdens_df, by.x = "ID", by.y = "project", all.x = T)
 
 #Add anonymous project code
-project_var$code = LETTERS[1:nrow(project_var)]
+if(analysis_type == "ongoing") {
+  project_var = project_var %>%
+    mutate(code = LETTERS[1:nrow(project_var)]) %>%
+    relocate(code, .before = "ID")
+}
 
-#Output: project status check results
-write.csv(projects_status, paste0(out_path, "_project_status.csv"), row.names = F)
+#Retrieve project-level environmental characteristics
+var_envir_list = vector("list", length(projects))
+for(i in seq_along(projects)) {
+  k_path = FindFiles(paste0(project_dir, projects[i]), "k.parquet", full = T)
+  m_path = FindFiles(paste0(project_dir, projects[i]), "matches.parquet", full = T)
 
-#Output: project-level variables
-write.csv(project_var, paste0(out_path, "_project_var.csv"), row.names = F)
-write.csv(subset(project_var, select = -ID), paste0(out_path, "_project_var_anon.csv"), row.names = F)
+  setK = read_parquet(k_path)
+  setM = read_parquet(m_path)
+  var_envir_list[[i]] = data.frame(prj_elev = mean(setK$elevation, na.rm = T),
+                                   prj_slope = mean(setK$slope, na.rm = T),
+                                   prj_remote = mean(setK$access, na.rm = T),
+                                   reg_elev = mean(setM$elevation, na.rm = T),
+                                   reg_slope = mean(setM$slope, na.rm = T),
+                                   reg_remote = mean(setM$access, na.rm = T))
+}
+var_envir = list_rbind(var_envir_list)
+project_var = cbind(project_var, var_envir)
+
+#load socio-economic variables for each country
+#Average and annual compound growth rate of GDP per capita (US$) five years prior to project start
+gdppc = read.csv("/maps/epr26/API_NY.GDP.PCAP.CD_DS2_en_csv_v2_85121.csv", header = T, skip = 4) %>%
+  dplyr::select(!c(2:4, "X")) %>%
+  pivot_longer(cols = starts_with("X"), values_to = "value", names_to = "year", names_prefix = "X")
+
+project_var$gdppc_mean = NA
+project_var$gdppc_rate = NA
+for(i in seq_along(project_var$ID)) {
+  country_i = project_var[i, ]$country
+  t0_i = project_var[i, ]$t0
+  gdppc_i = subset(gdppc, Country.Name == country_i & year <= t0_i & year >= t0_i - 5)
+  gdppc_mean = mean(gdppc_i$value, na.rm = T)
+  gdppc_rate = (gdppc_i[6, ]$value / gdppc_i[1, ]$value) ^ (1 / 5)
+  project_var[i, ]$gdppc_mean = gdppc_mean
+  project_var[i, ]$gdppc_rate = gdppc_rate
+}
+
+#Average and annual compound growth rate of  World Governance Index Control of Corruption indicator five years prior to project start
+wgicc = read.csv("/maps/epr26/wgidataset.csv", header = T) %>%
+  filter(indicator == "cc") %>%
+  mutate(estimate = as.numeric(estimate))
+
+project_var$wgicc_mean = NA
+for(i in seq_along(project_var$ID)) {
+  country_i = project_var[i, ]$country
+  t0_i = project_var[i, ]$t0
+  wgicc_i = subset(wgicc, countryname == country_i & year <= t0_i & year >= t0_i - 5)
+  project_var[i, ]$wgicc_mean = mean(wgicc_i$estimate, na.rm = T)
+}
+
+#Output
+write.csv(projects_status, paste0(out_path, "_project_status.csv"), row.names = F) #project status check results
+write.csv(project_var, paste0(out_path, "_project_var.csv"), row.names = F) #project-level variables
+write.csv(subset(project_var, select = -ID), paste0(out_path, "_project_var_anon.csv"), row.names = F) #anonymised project information
