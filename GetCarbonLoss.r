@@ -1,5 +1,8 @@
 #function to generate time series of annual change in project-level average carbon density
-GetCarbonLoss = function(pixels, t0, area_ha, area_adj_ratio, cdens, adjustArea = T, pair) {
+GetCarbonLoss = function(pixels, t0, area_ha, area_adj_ratio, cdens, adjustArea = T) {
+  #get pair number
+  pair = unique(pixels$pair)
+
   #make an adjustment of the area represented based on the proportion of unmatched pixels
   if(adjustArea) area_ha = area_ha * area_adj_ratio
 
@@ -24,8 +27,8 @@ GetCarbonLoss = function(pixels, t0, area_ha, area_adj_ratio, cdens, adjustArea 
 
   #calculate annual time series of average carbon density of the project (MgC/ha)
   carbon_series = area_series %>%
-    merge(., cdens, by.x = "class", by.y = "land.use.class", all.x = T) %>%
-    mutate(carbon_density = class_prop * carbon.density) %>% #MgC/ha
+    merge(., cdens, by.x = "class", by.y = "luc", all.x = T) %>%
+    mutate(carbon_density = class_prop * cdens) %>% #MgC/ha
     group_by(year) %>%
     summarise(carbon_density = sum(carbon_density, na.rm = T)) %>%
     ungroup() %>%

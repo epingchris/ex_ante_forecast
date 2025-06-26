@@ -35,6 +35,7 @@ rm(list = ls())
 #Load packages
 library(tidyverse) #ggplot2, dplyr, and stringr used in plotPlacebo/plotBaseline.r: tibble to store labels with bquote()
 library(magrittr) #pipe operators
+library(parallel) #detectCores()
 library(future) #parallelise lapply() : future_lapply()
 library(future.apply) #parallelise lapply(): future_lapply()
 library(sf) #st_drop_geometry() used in GetCarbonLoss.r (runs on GDAL 3.10)
@@ -63,77 +64,18 @@ projects = project_var$ID
 t0_vec = project_var$t0
 area_ha_vec = project_var$area_ha
 cdens_list = project_var %>%
-  dplyr::select(ID, cdens_1:cdens_6) %>%
-  pivot_longer(cdens_1:cdens_6, names_to = "land.use.class", names_prefix = "cdens_", values_to = "carbon.density") %>%
+  dplyr::select(ID, cdens_1:se_6) %>%
+  pivot_longer(cols = c(starts_with("cdens_"), starts_with("n_"), starts_with("se_")),
+               names_to = c(".value", "luc"),
+               names_sep = "_") %>%
   split(f = .$ID)
-
-#Retrieve input paths needed for the analysis
-parquet_dirs = paste0(parquet_path, projects)
-k_paths = rep(NA, length(projects))
-m_paths = rep(NA, length(projects))
-
-#retrieve project-level environmental characteristics
-var_envir_list = vector("list", length(projects))
-for(i in seq_along(projects)) {
-  k_paths[i] = FindFiles(parquet_dirs[i], "k.parquet", full = T)
-  m_paths[i] = FindFiles(parquet_dirs[i], "matches.parquet", full = T)
-
-  setK = read_parquet(k_paths[i])
-  setM = read_parquet(m_paths[i])
-  var_envir_list[[i]] = data.frame(prj_elev = mean(setK$elevation, na.rm = T),
-                                   prj_slope = mean(setK$slope, na.rm = T),
-                                   prj_remote = mean(setK$access, na.rm = T),
-                                   reg_elev = mean(setM$elevation, na.rm = T),
-                                   reg_slope = mean(setM$slope, na.rm = T),
-                                   reg_remote = mean(setM$access, na.rm = T))
-}
-var_envir = list_rbind(var_envir_list)
-project_var_envir = cbind(project_var, var_envir)
-
-#load socio-economic variables for each country
-#Average and annual compound growth rate of GDP per capita (US$) five years prior to project start
-gdppc = read.csv("/maps/epr26/API_NY.GDP.PCAP.CD_DS2_en_csv_v2_85121.csv", header = T, skip = 4) %>%
-  dplyr::select(!c(2:4, "X")) %>%
-  pivot_longer(cols = starts_with("X"), values_to = "value", names_to = "year", names_prefix = "X")
-
-project_var_envir$gdppc_mean = NA
-project_var_envir$gdppc_rate = NA
-for(i in seq_along(project_var_envir$ID)) {
-  country_i = project_var_envir[i, ]$country
-  t0_i = project_var_envir[i, ]$t0
-  gdppc_i = subset(gdppc, Country.Name == country_i & year <= t0_i & year >= t0_i - 5)
-  gdppc_mean = mean(gdppc_i$value, na.rm = T)
-  gdppc_rate = (gdppc_i[6, ]$value / gdppc_i[1, ]$value) ^ (1 / 5)
-  project_var_envir[i, ]$gdppc_mean = gdppc_mean
-  project_var_envir[i, ]$gdppc_rate = gdppc_rate
-}
-
-
-#Average and annual compound growth rate of  World Governance Index Control of Corruption indicator five years prior to project start
-wgicc = read.csv("/maps/epr26/wgidataset.csv", header = T) %>%
-  filter(indicator == "cc") %>%
-  mutate(estimate = as.numeric(estimate))
-
-project_var_envir$wgicc_mean = NA
-for(i in seq_along(project_var_envir$ID)) {
-  country_i = project_var_envir[i, ]$country
-  t0_i = project_var_envir[i, ]$t0
-  wgicc_i = subset(wgicc, countryname == country_i & year <= t0_i & year >= t0_i - 5)
-  project_var_envir[i, ]$wgicc_mean = mean(wgicc_i$estimate, na.rm = T)
-}
-
-project_var_envir = project_var_envir %>%
-  dplyr::select(!wgicc_rate)
-
-write.csv(project_var_envir, paste0(out_path, "_project_var_complete.csv"), row.names = F)
-
 
 #retrieve carbon time series for project pixel subsamples and matched pixels
 for(i in seq_along(projects)) {
   t0 = t0_vec[i]
   area_ha = area_ha_vec[i]
   cdens = cdens_list[[i]]
-  pair_dir = paste0(parquet_dirs[i], "/pairs/")
+  pair_dir = paste0(parquet_path, projects[i], "/pairs/")
 
   a = Sys.time()
   #find paths to match and unmatached points in each sampled pairs
@@ -161,21 +103,41 @@ for(i in seq_along(projects)) {
       #calculate proportion of unmatched pixels, used to adjust the area represented by sample: is this still necessary?
       area_adj_ratio = nrow(pairs) / (nrow(pairs) + nrow(unmatched_pairs))
 
-      pixels_cf = ReformatPixels(in_df = pairs, prefix = "s_", t0 = t0, treatment = "counterfactual", pair = j)
+      #reformat column names and split into project and counterfactual pixels
       pixels_p = ReformatPixels(in_df = pairs, prefix = "k_", t0 = t0, treatment = "project", pair = j)
-      pixels_matched = rbind(pixels_cf, pixels_p)
+      pixels_cf = ReformatPixels(in_df = pairs, prefix = "s_", t0 = t0, treatment = "counterfactual", pair = j)
+      pixels_matched = rbind(pixels_p, pixels_cf)
+      b = Sys.time()
 
-      #assess matching balance
-      balance_assessment = AssessBalance(pixels_matched, t0 = t0)
+      #assess matching balance; currently not used
+      #balance_assessment = AssessBalance(pixels_matched, t0 = t0)
 
-      #retrieve carbon time series for project and matched counterfactual
-      carbon_cf = GetCarbonLoss(pixels_cf, t0, area_ha, area_adj_ratio, cdens, pair = j)
-      carbon_p = GetCarbonLoss(pixels_p, t0, area_ha, area_adj_ratio, cdens, pair = j)
+      #generate bootstrapped samples of reference carbon density for each luc
+      n_boot = 1000
+      cdens_boot = cdens %>%
+        rowwise() %>%
+        mutate(boot = list(rnorm(n_boot, mean = cdens, sd = se))) %>%
+        ungroup() %>%
+        dplyr::select(boot) %>%
+        unnest_wider(boot, names_sep = "_")
+      carbon_p = vector("list", n_boot)
+      carbon_cf = vector("list", n_boot)
+      for(k in seq_len(n_boot)) {
+        cdens_k = data.frame(luc = 1:6, cdens = cdens_boot[, i])
+        colnames(cdens_k) = c("luc", "cdens")
+        #retrieve carbon time series for project and matched counterfactual
+        carbon_p[[k]] = GetCarbonLoss(pixels_p, t0, area_ha, area_adj_ratio, cdens = cdens_k) %>%
+          mutate(cdens_boot = k)
+        carbon_cf[[k]] = GetCarbonLoss(pixels_cf, t0, area_ha, area_adj_ratio, cdens = cdens_k) %>%
+          mutate(cdens_boot = k)
+      }
+      carbon_p = list_rbind(carbon_p)
+      carbon_cf = list_rbind(carbon_cf)
 
       pair_end = Sys.time()
       cat(j, ":", format(difftime(pair_end, pair_start, units = "secs")), "\n")
 
-      return(list(carbon_cf = carbon_cf, carbon_p = carbon_p,
+      return(list(carbon_p = carbon_p, carbon_cf = carbon_cf,
                   pixels_matched = pixels_matched, area_adj_ratio = area_adj_ratio,
                   balance_assessment = balance_assessment))
     }, future.seed = T)
@@ -185,13 +147,14 @@ for(i in seq_along(projects)) {
   cat("Project", i, "/", length(projects), "-", projects[i], "- project carbon loss :", format(difftime(b, a, units = "secs")), "\n")
 
   #reformat into wide data frames of all projects and pairs
+  carbon_p = lapply(pairs_out, function(x) x$carbon_p) %>%
+    list_rbind() %>%
+    mutate(treatment = "project")
+
   carbon_cf = lapply(pairs_out, function(x) x$carbon_cf) %>%
     list_rbind() %>%
     mutate(treatment = "counterfactual")
 
-  carbon_p = lapply(pairs_out, function(x) x$carbon_p) %>%
-    list_rbind() %>%
-    mutate(treatment = "project")
 
   carbon_matched = rbind(carbon_cf, carbon_p) %>%
     pivot_wider(values_from = "carbon_density", names_from = "treatment")
@@ -207,15 +170,15 @@ for(i in seq_along(projects)) {
            additionality_whole = diff_cf - diff_p,
            additionality_annual = exp(log(additionality_whole) / (year - t0)))
 
-  #calculate ex ante within-project annual per-area carbon loss rates
-  ante_project = carbon_matched %>%
+  #calculate historical within-project annual per-area carbon loss rates
+  historical_project = carbon_matched %>%
     filter(year <= t0) %>%
     group_by(pair) %>%
     mutate(closs = project - last(project),
            closs_annual = exp(log(closs) / (t0 - year)))
 
   write.csv(additionality, paste0(out_path, "_additionality_", projects[i], ".csv"), row.names = F)
-  write.csv(ante_project, paste0(out_path, "_project_closs_rate_", projects[i], ".csv"), row.names = F)
+  write.csv(historical_project, paste0(out_path, "_project_closs_rate_", projects[i], ".csv"), row.names = F)
 
   #retrieve carbon time series for surrounding region
   #convert to data table for faster subsampling and first down-sample to 250000
@@ -240,14 +203,14 @@ for(i in seq_along(projects)) {
     list_rbind() %>%
     mutate(treatment = "region")
 
-  #calculate ex ante regional annual per-area carbon loss rates
-  ante_region = closs_region %>%
+  #calculate historical regional annual per-area carbon loss rates
+  historical_region = closs_region %>%
     filter(year <= t0) %>%
     group_by(pair) %>%
     mutate(closs = carbon_density - last(carbon_density),
            closs_annual = ifelse(closs > 0, exp(log(closs) / (t0 - year)), NA))
 
-  write.csv(ante_region, paste0(out_path, "_regional_closs_rate_", projects[i], ".csv"), row.names = F)
+  write.csv(historical_region, paste0(out_path, "_regional_closs_rate_", projects[i], ".csv"), row.names = F)
 }
 
 
