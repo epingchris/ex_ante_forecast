@@ -1,5 +1,5 @@
 #function to generate time series of annual change in project-level average carbon density
-GetCarbonLoss = function(pixels, t0, area_ha, area_adj_ratio, cdens, adjustArea = T) {
+GetCarbonSeries = function(pixels, t0, area_ha, area_adj_ratio, cdens, adjustArea = T) {
   #get pair number
   pair = unique(pixels$pair)
 

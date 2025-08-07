@@ -44,6 +44,10 @@ if(analysis_type == "ongoing") {
     dplyr::select(ID, COUNTRY, t0) %>%
     rename(country = COUNTRY)
 
+  #standardise country names: Lao => Lao PDR, Congo, Dem Rep of the => Congo, Dem. Rep.
+  proj_info$country[proj_info$country == "Lao"] = "Lao PDR"
+  proj_info$country[proj_info$country == "Congo, Dem Rep of the"] = "Congo, Dem. Rep."
+
   #define include and exclude strings
   include_strings = NULL
   exclude_strings = c("archive", "slopes", "elevation", "srtm", "asn", "af", "sa", "\\.", "\\_")
