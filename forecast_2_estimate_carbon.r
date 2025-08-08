@@ -55,7 +55,7 @@ if (length(args) == 0) {
 }
 
 #Set parallelise plan
-plan(multisession, workers = 25)
+plan(multisession, workers = 20)
 
 #Load pre-defined functions
 source("FindFiles.r") #wrapper function to search files or folders based on inclusion/exclusion keywords
@@ -219,7 +219,27 @@ for(i in seq_along(projects)) {
     subsamp_start = Sys.time()
     setM_boot = setM_subsamp[sample(.N, 25000, replace = T)]
     pixels_region = ReformatPixels(in_df = setM_boot, prefix = "", t0 = t0, treatment = "region", pair = j)
-    carbon_region = GetCarbonSeries(pixels_region, t0, area_ha, area_adj_ratio = 1, cdens)
+
+    #generate bootstrapped samples of reference carbon density for each luc
+    n_boot = 1000
+    cdens_boot = cdens %>%
+      rowwise() %>%
+      mutate(boot = list(rnorm(n_boot, mean = cdens, sd = se))) %>%
+      ungroup() %>%
+      dplyr::select(boot) %>%
+      unnest_wider(boot, names_sep = "_")
+    carbon_region = vector("list", n_boot)
+    for(k in seq_len(n_boot)) {
+      a = Sys.time()
+      cdens_k = data.frame(luc = 1:6, cdens = cdens_boot[, i])
+      colnames(cdens_k) = c("luc", "cdens")
+      #retrieve carbon time series for project and matched counterfactual
+      carbon_region[[k]] = GetCarbonSeries(pixels_region, t0, area_ha, area_adj_ratio = 1, cdens = cdens_k) %>%
+        mutate(cdens_boot = k)
+      b = Sys.time()
+      cat("Cdens boot", k, ":", format(difftime(b, a, units = "secs")), "\n")
+    }
+    carbon_region = list_rbind(carbon_region)
     subsamp_end = Sys.time()
     cat(j, ":", format(difftime(subsamp_end, subsamp_start, units = "secs")), "\n")
     return(carbon_region)
