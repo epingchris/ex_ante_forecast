@@ -77,6 +77,8 @@ if(param_p[1] == "all") {
     filter(ID %in% param_p)
 }
 
+
+#Read project variables
 projects = project_sel$ID
 t0_vec = project_sel$t0
 area_ha_vec = project_sel$area_ha
@@ -93,6 +95,7 @@ for(i in seq_along(projects)) {
   t0 = t0_vec[i]
   area_ha = area_ha_vec[i]
   cdens = cdens_list[[i]]
+  cdens$se[is.na(cdens$se)] = 0  #if there is an NA in the se column, replace it with 0
   pair_dir = paste0(project_dir, projects[i], "/pairs/")
 
   a = Sys.time()
@@ -141,6 +144,7 @@ for(i in seq_along(projects)) {
       carbon_p = vector("list", n_boot)
       carbon_cf = vector("list", n_boot)
       for(k in seq_len(n_boot)) {
+        a = Sys.time()
         cdens_k = data.frame(luc = 1:6, cdens = cdens_boot[, i])
         colnames(cdens_k) = c("luc", "cdens")
         #retrieve carbon time series for project and matched counterfactual
@@ -148,6 +152,8 @@ for(i in seq_along(projects)) {
           mutate(cdens_boot = k)
         carbon_cf[[k]] = GetCarbonSeries(pixels_cf, t0, area_ha, area_adj_ratio, cdens = cdens_k) %>%
           mutate(cdens_boot = k)
+        b = Sys.time()
+        cat("Cdens boot", k, ":", format(difftime(b, a, units = "secs")), "\n")
       }
       carbon_p = list_rbind(carbon_p)
       carbon_cf = list_rbind(carbon_cf)
@@ -176,25 +182,31 @@ for(i in seq_along(projects)) {
   carbon_matched = rbind(carbon_cf, carbon_p) %>%
     pivot_wider(values_from = "carbon_density", names_from = "treatment")
 
-  #calculate ex post annual counterfactual carbon loss rates and per-area carbon credit generation rates
+  #calculate per-area annual carbon credit generation rates (additionality)
   additionality = carbon_matched %>%
     filter(year >= t0) %>%
     group_by(pair) %>%
     mutate(diff_cf = first(counterfactual) - counterfactual,
            diff_p = first(project) - project,
-           cf_closs = exp(log(diff_cf) / (year - t0)),
-           additionality_whole = diff_cf - diff_p,
-           additionality_annual = ifelse(additionality_whole > 0, exp(log(additionality_whole) / (year - t0)), NA))
+           additionality = diff_cf - diff_p,
+           additionality_arith = additionality / (year - t0),
+           additionality_geom = additionality ^ (1 / (year - t0)))
+
+  #calculate ex post annual counterfactual carbon loss rates
+  obs_counterfactual = carbon_matched %>%
+    filter(year >= t0) %>%
+    group_by(pair) %>%
+    mutate(closs = 1 - (counterfactual / first(counterfactual)) ^ (1 / (year - t0)))
 
   #calculate historical within-project annual per-area carbon loss rates
   historical_project = carbon_matched %>%
     filter(year <= t0) %>%
     group_by(pair) %>%
-    mutate(closs = project - last(project),
-           closs_annual = exp(log(closs) / (t0 - year)))
+    mutate(closs = 1 - (last(project) / project) ^ (1 / (t0 - year)))
 
   write.csv(additionality, paste0(out_path, "_additionality_", projects[i], ".csv"), row.names = F)
-  write.csv(historical_project, paste0(out_path, "_project_closs_rate_", projects[i], ".csv"), row.names = F)
+  write.csv(obs_counterfactual, paste0(out_path, "_closs_observed_", projects[i], ".csv"), row.names = F)
+  write.csv(historical_project, paste0(out_path, "_closs_project_", projects[i], ".csv"), row.names = F)
 
   #retrieve carbon time series for surrounding region
   m_path = FindFiles(paste0(project_dir, projects[i]), "matches.parquet", full = T)
@@ -221,52 +233,53 @@ for(i in seq_along(projects)) {
     mutate(treatment = "region") %>%
     filter(year <= t0) %>%
     group_by(pair) %>%
-    mutate(closs = carbon_density - last(carbon_density),
-           closs_annual = ifelse(closs > 0, exp(log(closs) / (t0 - year)), NA))
+    mutate(closs = 1 - (last(carbon_density) / carbon_density) ^ (1 / (t0 - year)))
 
-  write.csv(historical_region, paste0(out_path, "_regional_closs_rate_", projects[i], ".csv"), row.names = F)
+  write.csv(historical_region, paste0(out_path, "_closs_regional_", projects[i], ".csv"), row.names = F)
 }
 
 
 # C. Bootstrap outcomes ----
-cf_closs_boot_list = vector("list", length(projects))
-additionality_boot_list = vector("list", length(projects))
-historical_project_boot_list = vector("list", length(projects))
-historical_region_boot_list = vector("list", length(projects))
+boot_additionality_list = vector("list", length(projects))
+boot_closs_observed_list = vector("list", length(projects))
+boot_closs_project_list = vector("list", length(projects))
+boot_closs_region_list = vector("list", length(projects))
 
 for(i in seq_along(projects)) {
   a = Sys.time()
   t0 = t0_vec[i]
   project_i = projects[i]
   additionality = read.csv(paste0(out_path, "_additionality_", projects[i], ".csv"), header = T)
-  historical_project = read.csv(paste0(out_path, "_project_closs_rate_", projects[i], ".csv"), header = T)
-  historical_region = read.csv(paste0(out_path, "_regional_closs_rate_", projects[i], ".csv"), header = T)
+  closs_observed = read.csv(paste0(out_path, "_closs_observed_", projects[i], ".csv"), header = T)
+  closs_project = read.csv(paste0(out_path, "_closs_project_", projects[i], ".csv"), header = T)
+  closs_regional = read.csv(paste0(out_path, "_closs_regional_", projects[i], ".csv"), header = T)
   tmax = max(additionality$year)
 
-  #bootstrap ex post counterfactual carbon loss rate
-  cf_closs_boot_list[[i]] = BootOut(in_df = additionality, column = "cf_closs", from = t0 + 1, to = tmax) %>%
+  #bootstrap ex post additionality accumulation rate: use arithmetic mean of annual additionality
+  boot_additionality_list[[i]] = BootOut(in_df = additionality, column = "additionality_arith", from = t0 + 1, to = tmax) %>%
     mutate(project = project_i)
-  #bootstrap ex post additionality
-  additionality_boot_list[[i]] = BootOut(in_df = additionality, column = "additionality_annual", from = t0 + 1, to = tmax) %>%
+
+  #bootstrap ex post counterfactual carbon loss rate
+  boot_closs_observed_list[[i]] = BootOut(in_df = closs_observed, column = "closs", from = t0 + 1, to = tmax) %>%
     mutate(project = project_i)
 
   #bootstrap historical carbon loss rate
-  historical_project_boot_list[[i]] = BootOut(in_df = historical_project, column = "closs_annual", from = t0 - 10, to = t0 - 1) %>%
+  boot_closs_project_list[[i]] = BootOut(in_df = closs_project, column = "closs", from = t0 - 10, to = t0 - 1) %>%
     mutate(project = project_i)
 
   #bootstrap historical regional carbon loss rate
-  historical_region_boot_list[[i]] = BootOut(in_df = historical_region, column = "closs_annual", from = t0 - 10, to = t0 - 1) %>%
+  boot_closs_region_list[[i]] = BootOut(in_df = closs_regional, column = "closs", from = t0 - 10, to = t0 - 1) %>%
     mutate(project = project_i)
   b = Sys.time()
   cat("Project", i, "/", length(projects), "-", projects[i], "- bootstrapping :", format(difftime(b, a, units = "secs")), "\n")
 }
 
-cf_closs_boot_df = list_rbind(cf_closs_boot_list)
-additionality_boot_df = list_rbind(additionality_boot_list)
-historical_project_boot_df = list_rbind(historical_project_boot_list)
-historical_region_boot_df = list_rbind(historical_region_boot_list)
+boot_additionality_df = list_rbind(boot_additionality_list)
+boot_closs_observed_df = list_rbind(boot_closs_observed_list)
+boot_closs_project_df = list_rbind(boot_closs_project_list)
+boot_closs_region_df = list_rbind(boot_closs_region_list)
 
-write.csv(cf_closs_boot_df, paste0(out_path, "_boot_cf_closs.csv"), row.names = F)
-write.csv(additionality_boot_df, paste0(out_path, "_boot_additionality.csv"), row.names = F)
-write.csv(historical_project_boot_df, paste0(out_path, "_boot_project_closs_rate.csv"), row.names = F)
-write.csv(historical_region_boot_df, paste0(out_path, "_boot_regional_closs_rate.csv"), row.names = F)
+write.csv(boot_additionality_df, paste0(out_path, "_boot_additionality.csv"), row.names = F)
+write.csv(boot_closs_observed_df, paste0(out_path, "_boot_closs_observed.csv"), row.names = F)
+write.csv(boot_closs_project_df, paste0(out_path, "_boot_closs_project.csv"), row.names = F)
+write.csv(boot_closs_region_df, paste0(out_path, "_boot_closs_regional.csv"), row.names = F)
