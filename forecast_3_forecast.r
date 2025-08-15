@@ -156,9 +156,9 @@ for(i in 1:10) {
   }
 }
 forecast_prj = list_rbind(forecast_prj_list) %>%
-  mutate(type = "project")
+  mutate(type = "Project")
 forecast_reg = list_rbind(forecast_reg_list) %>%
-  mutate(type = "region")
+  mutate(type = "Region")
 
 
 #Generate mixed forecasts from project and regional rates using different historical periods
@@ -187,100 +187,66 @@ for(i in 1:10) {
   }
 }
 forecast_mix = list_rbind(forecast_mix_list) %>%
-  mutate(type = "mixed")
+  mutate(type = "Mixed")
 
-forecast_all = bind_rows(forecast_prj, forecast_reg, forecast_mix)
+forecast_all = bind_rows(forecast_prj, forecast_reg, forecast_mix) %>%
+  left_join(observed, by = c("project", "period_target"))
 
 # Merge with observed values
 forecast_summ = forecast_all %>%
-  left_join(observed, by = c("project", "period_target")) %>%
   group_by(period_hist_prj, period_hist_reg, period_target, type) %>%
   summarise(r2 = summary(lm(rate_obs ~ forecast))$r.squared,
             mae = mean(abs(forecast - rate_obs), na.rm = T),
-            bias = mean(forecast - rate_obs, na.rm = T)) %>%
+            bias = mean(forecast - rate_obs, na.rm = T),
+            mape = mean(abs(forecast - rate_obs) / abs(rate_obs), na.rm = T) * 100,
+            mpb = mean((forecast - rate_obs) / rate_obs, na.rm = T) * 100) %>%
   ungroup()
 
-forecast_prj_summ = forecast_prj %>%
-  group_by(period_hist_prj, year) %>%
-  summarise(r2 = summary(lm(rate_obs ~ forecast))$r.squared,
-            mae = mean(abs(forecast - rate_obs), na.rm = T),
-            bias = mean(forecast - rate_obs, na.rm = T)) %>%
-  ungroup() %>%
-  mutate(type = "Project")
-forecast_reg_summ = forecast_reg %>%
-  group_by(period_hist_reg, year) %>%
-  summarise(r2 = summary(lm(rate_obs ~ forecast))$r.squared,
-            mae = mean(abs(forecast - rate_obs), na.rm = T),
-            bias = mean(forecast - rate_obs, na.rm = T)) %>%
-  ungroup() %>%
-  mutate(type = "Region")
-forecast_mix_summ = forecast_mix %>%
-  group_by(period_hist_prj, period_hist_reg, year) %>%
-  summarise(r2 = summary(lm(rate_obs ~ forecast))$r.squared,
-            mae = mean(abs(forecast - rate_obs), na.rm = T),
-            bias = mean(forecast - rate_obs, na.rm = T)) %>%
-  ungroup() %>%
-  mutate(type = "Mixed")
+write.csv(forecast_all, paste0(out_path, "_forecast.csv"), row.names = F)
+write.csv(forecast_summ, paste0(out_path, "_forecast_summary.csv"), row.names = F)
 
-write.csv(forecast_prj, paste0(out_path, "_forecast_1_prj.csv"), row.names = F)
-write.csv(forecast_reg, paste0(out_path, "_forecast_2_reg.csv"), row.names = F)
-write.csv(forecast_mix, paste0(out_path, "_forecast_3_mix.csv"), row.names = F)
-write.csv(forecast_prj_summ, paste0(out_path, "_forecast_summ_1_prj.csv"), row.names = F)
-write.csv(forecast_reg_summ, paste0(out_path, "_forecast_summ_2_reg.csv"), row.names = F)
-write.csv(forecast_mix_summ, paste0(out_path, "_forecast_summ_3_mix.csv"), row.names = F)
-
-forecast_prj = read.csv(paste0(out_path, "_forecast_1_prj.csv"), header = T)
-forecast_reg = read.csv(paste0(out_path, "_forecast_2_reg.csv"), header = T)
-forecast_mix = read.csv(paste0(out_path, "_forecast_3_mix.csv"), header = T)
-forecast_prj_summ = read.csv(paste0(out_path, "_forecast_summ_1_prj.csv"), header = T)
-forecast_reg_summ = read.csv(paste0(out_path, "_forecast_summ_2_reg.csv"), header = T)
-forecast_mix_summ = read.csv(paste0(out_path, "_forecast_summ_3_mix.csv"), header = T)
+forecast_all = read.csv(paste0(out_path, "_forecast.csv"), header = T)
+forecast_summ = read.csv(paste0(out_path, "_forecast_summary.csv"), header = T)
 
 
-#Plot and compare overall forecasting performances of three approaches
-axis_label_prj = expression(paste("Start of historical period for project rates (years before ", italic(t[0]), ")", sep = ""))
-axis_label_reg = expression(paste("Start of historical period for regional rates (years before ", italic(t[0]), ")", sep = ""))
-axis_label_target = expression(paste("End of target period (years after ", italic(t[0]), ")", sep = ""))
-
-forecast_aggr = bind_rows(forecast_prj_summ, forecast_reg_summ, forecast_mix_summ) %>%
-  relocate(region_used, .after = project_used)
-
-#Figure 5. r2, MAE and bias (mean and range) for each type of forecasts across all target periods
+#Plot Figure 5. Overall forecasting performances (mean and range of r2, MAE and bias) for each type of forecasts across all target periods
 figure5_list = vector("list", 0)
-for(var in c("r2", "mae", "bias")) {
+for(var in c("r2", "mape", "mpb")) {
   figtitle = switch(var,
                     "r2" = expression("A. Coefficient of determination (R"^2*")"),
                     "mae" = expression("B. Mean absolute error (MAE)"),
-                    "bias" = expression("C. Predictive bias"))
-  figname = switch(var,
-                   "r2" = "figure5a_overall_r2.png",
-                   "mae" = "figure5b_overall_mae.png",
-                   "bias" = "figure5c_overall_bias.png")
+                    "bias" = expression("C. Mean bias"),
+                    "mape" = expression("B. Mean absolute percentage error (MAPE)"),
+                    "mpb" = expression("C. Mean percentage bias (MPB)"))
   y_scale = switch(var,
              "r2" = seq(0, 0.75, 0.25),
-             "mae" = seq(0, 1.2, 0.2),
-             "bias" = round(seq(-1.25, 0.75, 0.25), 2))
+             "mae" = seq(0, 0.15, 0.05),
+             "bias" = seq(-0.015, 0, 0.005),
+             "mape" = seq(0, 350, 50),
+             "mpb" = seq(-100, 300, 100))
   y_label = switch(var,
              "r2" = expression(R^2),
              "mae" = expression(MAE),
-             "bias" = expression(Bias))
+             "bias" = expression(Bias),
+             "mape" = expression(`MAPE (%)`),
+             "mpb" = expression(`MPB (%)`))
 
-  forecast_aggr_summ = forecast_aggr %>%
-    dplyr::select(any_of(c("type", var, "year"))) %>%
-    group_by(type, year) %>%
+  forecast_summ_plot = forecast_summ %>%
+    dplyr::select(any_of(c("type", var, "period_target"))) %>%
+    group_by(type, period_target) %>%
     summarise(mean = mean(.data[[var]], na.rm = T),
               min = min(.data[[var]], na.rm = T),
               max = max(.data[[var]], na.rm = T),
               lower = quantile(.data[[var]], 0.025, na.rm = T),
               upper = quantile(.data[[var]], 0.975, na.rm = T)) %>%
     ungroup() %>%
-    mutate(type = factor(type, levels = c("Project", "Region", "Mixed")))
+    mutate(type = factor(type, levels = c("project", "region", "mixed")))
 
-  figure5_list[[var]] = ggplot(data = forecast_aggr_summ, aes(x = year, y = mean)) +
+  figure5_list[[var]] = ggplot(data = forecast_summ_plot, aes(x = period_target, y = mean)) +
     geom_line(aes(color = type), linewidth = 2) +
-    geom_ribbon(aes(ymin = min, ymax = max, fill = type), alpha = 0.1) +
-    scale_color_manual(values = c("#40B0A6", "#CDAC60", "#9467BD")) +
-    scale_fill_manual(values = c("#40B0A6", "#CDAC60", "#9467BD")) +
+    geom_ribbon(aes(ymin = lower, ymax = upper, fill = type), alpha = 0.1) +
+    scale_color_manual(values = c("#40B0A6", "#CDAC60", "#9467BD"), labels = c("Project", "Region", "Mixed")) +
+    scale_fill_manual(values = c("#40B0A6", "#CDAC60", "#9467BD"), labels = c("Project", "Region", "Mixed")) +
     scale_x_continuous(breaks = 1:10, labels = 1:10) +
     scale_y_continuous(breaks = y_scale, labels = y_scale) +
     labs(title = figtitle, x = "Number of years afte project start", y = y_label,
@@ -297,10 +263,12 @@ for(var in c("r2", "mae", "bias")) {
           legend.key.size = unit(1.5, "cm"))
 }
 
-figure5_full = figure5_list$r2 / figure5_list$mae / figure5_list$bias +
+figure5_full = figure5_list[[1]] / figure5_list[[2]] / figure5_list[[3]] +
   plot_layout(guide = "collect", axes = "collect", axis_titles = "collect") &
   theme(legend.position = "bottom")
-ggsave(paste0(fig_path, "figure5_overall.png"), width = 40, height = 60, unit = "cm")
+
+ggsave(paste0(fig_path, "figure5.png"), width = 40, height = 60, unit = "cm")
+ggsave(paste0(fig_path, "figure5_perc.png"), width = 40, height = 60, unit = "cm")
 
 
 #Determine the best forecasts using overall rankings of r2, MAE and bias for 5-year and 10-year forecasts
@@ -308,36 +276,32 @@ normalize = function(vec) {
   (vec - min(vec, na.rm = T)) / (max(vec, na.rm = T) - min(vec, na.rm = T))
 }
 
-forecast_aggr_rank_5 = forecast_aggr %>%
-  filter(year == 5) %>%
-  mutate(r2_rank = rank(-r2), mae_rank = rank(mae), bias_rank = rank(abs(bias)),
-         r2_nmz = normalize(-r2), mae_nmz = normalize(mae), bias_nmz = normalize((abs(bias))))
-forecast_aggr_rank_10 = forecast_aggr %>%
-  filter(year == 10) %>%
-  mutate(r2_rank = rank(-r2), mae_rank = rank(mae), bias_rank = rank(abs(bias)),
-         r2_nmz = normalize(-r2), mae_nmz = normalize(mae), bias_nmz = normalize((abs(bias))))
-forecast_aggr_rank = bind_rows(forecast_aggr_rank_5, forecast_aggr_rank_10) %>%
-  pivot_wider(names_from = year,
-              values_from = c(r2, mae, bias, r2_rank, mae_rank, bias_rank, r2_nmz, mae_nmz, bias_nmz),
+forecast_summ_5 = forecast_summ %>%
+  dplyr::select(!any_of(c("mae", "bias"))) %>%
+  filter(period_target == 5) %>%
+  mutate(r2_rank = rank(-r2, na.last = NA), mape_rank = rank(mape, na.last = NA), mpb_rank = rank(abs(mpb), na.last = NA),
+         r2_nmz = normalize(-r2), mape_nmz = normalize(mape), mpb_nmz = normalize((abs(mpb))))
+forecast_summ_10 = forecast_summ %>%
+  dplyr::select(!any_of(c("mae", "bias"))) %>%
+  filter(period_target == 10) %>%
+  mutate(r2_rank = rank(-r2, na.last = NA), mape_rank = rank(mape, na.last = NA), mpb_rank = rank(abs(mpb), na.last = NA),
+         r2_nmz = normalize(-r2), mape_nmz = normalize(mape), mpb_nmz = normalize((abs(mpb))))
+forecast_summ_rank = bind_rows(forecast_summ_5, forecast_summ_10) %>%
+  pivot_wider(names_from = period_target,
+              values_from = c(r2, mape, mpb, r2_rank, mape_rank, mpb_rank, r2_nmz, mape_nmz, mpb_nmz),
               names_sep = "_") %>%
-  mutate(sum_5 = r2_nmz_5 + mae_nmz_5 + bias_nmz_5,
-         sum_10 = r2_nmz_10 + mae_nmz_10 + bias_nmz_10,
+  mutate(sum_5 = r2_nmz_5 + mape_nmz_5 + mpb_nmz_5,
+         sum_10 = r2_nmz_10 + mape_nmz_10 + mpb_nmz_10,
          sum_tot = sum_5 + sum_10,
-         rank_sum_5 = r2_rank_5 + mae_rank_5 + bias_rank_5,
-         rank_sum_10 = r2_rank_10 + mae_rank_10 + bias_rank_10,
-         rank_sum_tot = sum_5 + sum_10) %>%
-  mutate(rank_sum_5 = rank(sum_5),
-         rank_sum_10 = rank(sum_10),
-         rank_sum_tot = rank(sum_tot),
-         rank_sum_rank_5 = rank(rank_sum_5),
-         rank_sum_rank_10 = rank(rank_sum_10),
-         rank_sum_rank_tot = rank(rank_sum_tot))
-View(filter(forecast_aggr_rank, rank_sum_rank_5 <= 12))
-View(filter(forecast_aggr_rank, rank_sum_rank_10 <= 12))
-View(filter(forecast_aggr_rank, rank_sum_rank_tot <= 12))
-View(filter(forecast_aggr_rank, rank_sum_5 <= 12))
-View(filter(forecast_aggr_rank, rank_sum_10 <= 12))
-View(filter(forecast_aggr_rank, rank_sum_tot <= 12))
+         sum_rank_5 = r2_rank_5 + mape_rank_5 + mpb_rank_5,
+         sum_rank_10 = r2_rank_10 + mape_rank_10 + mpb_rank_10,
+         sum_rank_tot = sum_rank_5 + sum_rank_10)
+filter(forecast_summ_rank, sum_rank_5 <= quantile(sum_rank_5, 0.1, na.rm = T))
+filter(forecast_summ_rank, sum_rank_10 <= quantile(sum_rank_10, 0.1, na.rm = T))
+filter(forecast_summ_rank, sum_rank_tot <= quantile(sum_rank_tot, 0.1, na.rm = T))
+filter(forecast_summ_rank, sum_5 <= quantile(sum_5, 0.1, na.rm = T))
+filter(forecast_summ_rank, sum_10 <= quantile(sum_10, 0.1, na.rm = T))
+filter(forecast_summ_rank, sum_tot <= quantile(sum_tot, 0.1, na.rm = T))
 #best forecast: mixed with project_used = -10 and region_used = -10
 
 table_1 = forecast_aggr_rank %>%
