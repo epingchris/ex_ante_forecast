@@ -23,6 +23,8 @@ library(vegan) #vegan::varpart
 library(eulerr) #eulerr::euler
 library(Metrics) #Metrics::mae
 library(patchwork)
+library(gridExtra)
+library(grid) #grid::textGrob, grid::gpar
 
 #Set parallelise plan
 plan(multisession, workers = 20)
@@ -130,6 +132,11 @@ observed = boot_closs_observed_rel %>%
   filter(year <= 10) %>%
   rename(period_target = year, rate_obs = mean) %>%
   complete(project, period_target = 1:10, fill = list(rate_obs = NA_real_))
+
+observed_add = boot_additionality_rel %>%
+  filter(year <= 10) %>%
+  rename(period_target = year, additionality = mean) %>%
+  complete(project, period_target = 1:10, fill = list(additionality = NA_real_))
 
 #Generate simple forecasts from project or regional rates using different historical periods
 forecast_prj_list = vector("list", 10 * length(projects))
@@ -267,7 +274,6 @@ figure5_full = figure5_list[[1]] / figure5_list[[2]] / figure5_list[[3]] +
   plot_layout(guide = "collect", axes = "collect", axis_titles = "collect") &
   theme(legend.position = "bottom")
 
-ggsave(paste0(fig_path, "figure5.png"), width = 40, height = 60, unit = "cm")
 ggsave(paste0(fig_path, "figure5_perc.png"), width = 40, height = 60, unit = "cm")
 
 
@@ -302,50 +308,60 @@ filter(forecast_summ_rank, sum_rank_tot <= quantile(sum_rank_tot, 0.1, na.rm = T
 filter(forecast_summ_rank, sum_5 <= quantile(sum_5, 0.1, na.rm = T))
 filter(forecast_summ_rank, sum_10 <= quantile(sum_10, 0.1, na.rm = T))
 filter(forecast_summ_rank, sum_tot <= quantile(sum_tot, 0.1, na.rm = T))
-#best forecast: mixed with project_used = -10 and region_used = -10
+#best forecast: mixed with project_used = -10 and region_used = -7
 
-table_1 = forecast_aggr_rank %>%
-  filter(rank_sum_rank_tot <= 12) %>%
-  dplyr::select(project_used, region_used, type, r2_5, r2_10, mae_5, mae_10, bias_5, bias_10, rank_sum_rank_tot) %>%
-  arrange(rank_sum_rank_tot)
+table_1 = forecast_summ_rank %>%
+  filter(sum_rank_tot <= quantile(sum_rank_tot, 0.1, na.rm = T)) %>%
+  dplyr::select(period_hist_prj, period_hist_reg, type, r2_5, r2_10, mape_5, mape_10, mpb_5, mpb_10, sum_rank_tot) %>%
+  arrange(sum_rank_tot)
 write.csv(table_1, paste0(fig_path, "table_1.csv"), row.names = F)
 
 
 #Linear model to predict carbon credit production over five-year and ten-year target periods
 envir_var = project_var %>%
-  dplyr::select(!c(country, t0, code) & !starts_with("cdens"))
+  dplyr::select(!c(country, t0, code) & !starts_with(c("cdens", "n_", "se_")))
 envir_var_cor = cor(envir_var %>% dplyr::select(!ID))
 corrplot(envir_var_cor, type = "lower", order = "hclust", addCoef.col = "black", diag = F)
 #prj_ and reg_ environmental variables highly correlated: remove reg_
 #slope and elevation highly correlated: remove elevation
 
-envir_var = project_var %>%
-  dplyr::select(!c(country, t0, code, prj_elev) & !starts_with("cdens") & !starts_with("reg_"))
+envir_var = envir_var %>%
+  dplyr::select(!prj_elev & !starts_with("reg_"))
 envir_var_cor = cor(envir_var %>% dplyr::select(!ID))
 corrplot(envir_var_cor, type = "lower", order = "hclust", addCoef.col = "black", diag = F)
 
-forecast_best = forecast_mix %>%
-  filter(project_used == -10 & region_used == -10 & year %in% c(5, 10)) %>%
-  dplyr::select(!c(project_used, region_used, obs_cf_closs, type))
+forecast_var = forecast_all %>%
+  filter(period_hist_prj == -10 & period_hist_reg == -7 & period_target %in% c(5, 10)) %>%
+  dplyr::select(c(period_target, forecast, project)) %>%
+  pivot_wider(names_from = "period_target", values_from = "forecast", names_prefix = "forecast_")
 
-forecast_var = left_join(forecast_best, envir_var, join_by(project == ID))
-forecast_var_scale = forecast_var %>%
-  relocate(forecast, .after = "obs_add") %>%
-  mutate_at(4:10, scale)
+observed_var = observed_add %>%
+  filter(period_target %in% c(5, 10)) %>%
+  dplyr::select(c(period_target, project, additionality)) %>%
+  pivot_wider(names_from = "period_target", values_from = "additionality", names_prefix = "additionality_")
+
+model_df = left_join(forecast_var, envir_var, join_by(project == ID)) %>%
+  left_join(observed_var, ., join_by(project == project))
+model_df_scaled = model_df %>%
+  mutate_at(vars(-project), ~ as.numeric(scale(.))) #scale and center all columns except project
+
 
 plots_optim = vector("list", 2)
 plots_simpl = vector("list", 2)
 effects = vector("list", 2)
 for(i in 1:2) {
   yr_sel = c(5, 10)[i]
+  yr_excl = c(10, 5)[i]
   figtitle = c("Five-year prediction", "Ten-year prediction")[i]
-  lm_data = subset(forecast_var_scale, year == yr_sel)
+  model_df_selected = model_df_scaled %>%
+    dplyr::select(!project & !ends_with(as.character(yr_excl))) %>%
+    rename(additionality = colnames(.)[1], forecast = colnames(.)[2])
 
-  forecast_lm = lm(obs_add ~ . - project, data = lm_data) #full model
-  forecast_lm_optim = stepAIC(forecast_lm, direction = "backward", trace = 1) #selected model: dropped wgicc_mean, gdppc_rate, prj_remote
-  forecast_lm_simpl = lm(obs_add ~ forecast, data = lm_data) #simplistic model with only forecast of counterfactual carbon loss
-  R2_optim = summary(forecast_lm_optim)$adj.r.squared #adjusted R2 = 0.745
-  R2_simpl = summary(forecast_lm_simpl)$adj.r.squared #adjusted R2 = 0.479
+  forecast_lm = lm(additionality ~ ., data = model_df_selected) #full model
+  forecast_lm_optim = stepAIC(forecast_lm, direction = "backward", trace = 1) #selected model: dropped wgicc_mean, gdppc_rate
+  forecast_lm_simpl = lm(additionality ~ forecast, data = model_df_selected) #simplistic model with only forecast of counterfactual carbon loss
+  R2_optim = summary(forecast_lm_optim)$adj.r.squared #adjusted R2 = 0.1827
+  R2_simpl = summary(forecast_lm_simpl)$adj.r.squared #adjusted R2 = 0.0908
 
   png(paste0(fig_path, "figure6_diagnostic_", yr_sel, ".png"), width = 600, height = 600)
   par(mfrow = c(2, 2))
@@ -362,22 +378,27 @@ for(i in 1:2) {
   vars = attr(terms(forecast_lm_optim), "term.labels")
   for(var_i in vars) {
     vars_new = setdiff(vars, var_i)
-    new_formula = reformulate(vars_new, response = "obs_add")
-    forecast_lm_min = lm(new_formula, data = lm_data)
+    new_formula = reformulate(vars_new, response = "additionality")
+    forecast_lm_min = lm(new_formula, data = model_df_selected)
     incr_r2 = c(incr_r2, R2_optim - summary(forecast_lm_min)$adj.r.squared)
   }
   effects[[i]]$incr_r2 = incr_r2
 
-  orig_data = forecast_var %>%
-    filter(year == yr_sel & !if_any(everything(), is.na))
+  model_df_orig = model_df %>%
+    dplyr::select(paste0("additionality_", yr_sel)) %>%
+    rename(additionality = colnames(.)[1]) %>%
+    filter(!if_any(everything(), is.na))
 
-  #MAE
-  forecast_df = data.frame(pred_optim = predict(forecast_lm_optim), pred_simpl = orig_data$forecast, observed = orig_data$obs_add)
-  mae_optim = mean(abs(forecast_df$pred_optim - forecast_df$observed))
-  mae_simpl = mean(abs(forecast_df$pred_simpl - forecast_df$observed))
+  #mean absolute percentage error (MAPE)
+  pred_df = data.frame(pred_optim = predict(forecast_lm_optim),
+                       pred_simpl = predict(forecast_lm_simpl),
+                       observed = model_df_orig$additionality)
+  mape_optim = mean(abs(pred_df$pred_optim - pred_df$observed) / abs(pred_df$observed))
+  mape_simpl = mean(abs(pred_df$pred_simpl - pred_df$observed) / abs(pred_df$observed))
 
-  mean_bias_optim = mean(forecast_df$pred_optim - forecast_df$observed)
-  mean_bias_simpl = mean(forecast_df$pred_simpl - forecast_df$observed)
+  #mean percentage bias (MPB)
+  mpb_optim = mean((pred_df$pred_optim - pred_df$observed) / pred_df$observed)
+  mpb_simpl = mean((pred_df$pred_simpl - pred_df$observed) / pred_df$observed)
 
   #leave-one-out jackknife predictive bias
   # bias_optim = rep(NA, 20)
@@ -389,15 +410,15 @@ for(i in 1:2) {
   # mean_bias_optim = mean(bias_optim, na.rm = T)
 
   #Plot selected model (observed carbon credit production vs predicted carbon credit production)
-  plots_optim[[i]] = ggplot(data = forecast_df) +
+  plots_optim[[i]] = ggplot(data = pred_df) +
     geom_point(aes(x = pred_optim, y = observed), size = 3) +
     geom_abline(intercept = 0, slope = 1, linetype = "dashed") +
     annotate(geom = "text", x = 1, y = 0.4, size = 10,
              label = bquote(paste(R^2, " = ", .(round(R2_optim, 3))))) +
     annotate(geom = "text", x = 1, y = 0.3, size = 10,
-             label = bquote(paste("MAE: ", .(round(mae_optim, 3))))) +
+             label = bquote(paste("MAPE: ", .(round(mape_optim, 3))))) +
     annotate(geom = "text", x = 1, y = 0.2, size = 10,
-             label = bquote(paste("Bias: ", .(round(mean_bias_optim, 3))))) +
+             label = bquote(paste("MPB: ", .(round(mpb_optim, 3))))) +
     labs(title = figtitle,
          x = bquote(paste("Predicted carbon credit production (MgC ", ha^-1, " ", yr^-1, ")")),
          y = "") +
@@ -416,15 +437,15 @@ for(i in 1:2) {
           axis.line = element_line(color = "black"))
 
   #Plot simplistic model (observed carbon credit production vs forecast of counterfactual carbon loss)
-  plots_simpl[[i]] = ggplot(data = forecast_df) +
+  plots_simpl[[i]] = ggplot(data = pred_df) +
     geom_point(aes(x = pred_simpl, y = observed), size = 3) +
     geom_abline(intercept = 0, slope = 1, linetype = "dashed") +
     annotate(geom = "text", x = 1, y = 0.4, size = 10,
              label = bquote(paste(R^2, " = ", .(round(R2_simpl, 3))))) +
     annotate(geom = "text", x = 1, y = 0.3, size = 10,
-             label = bquote(paste("MAE: ", .(round(mae_simpl, 3))))) +
+             label = bquote(paste("MAPE: ", .(round(mape_simpl, 3))))) +
     annotate(geom = "text", x = 1, y = 0.2, size = 10,
-             label = bquote(paste("Bias: ", .(round(mean_bias_simpl, 3))))) +
+             label = bquote(paste("MPB: ", .(round(mpb_simpl, 3))))) +
     labs(title = figtitle,
          x = bquote(paste("Predicted carbon credit production (MgC ", ha^-1, " ", yr^-1, ")")),
          y = "") +
@@ -441,7 +462,6 @@ for(i in 1:2) {
           axis.line = element_line(color = "black"))
 }
 
-
 plot_optim_all = plots_optim[[1]] + plots_optim[[2]] +
   plot_layout(axes = "collect", axis_titles = "collect")
 plot_optim_title = wrap_elements(grid::textGrob("A. Selected model", gp = gpar(fontsize = 36, fontface = "bold")))
@@ -456,10 +476,7 @@ title_y = wrap_elements(grid::textGrob(bquote(paste("Observed carbon credit prod
 plot_all = title_y + plot_all +
   plot_layout(width = c(0.02, 1))
 plot_all
-ggsave(paste0(fig_path, "figure6_observed_vs_forecasted.png"), width = 50, height = 50, unit = "cm")
-
-#ggsave(paste0(fig_path, "figure6a_observed_vs_forecasted_optim.png"), width = 60, height = 30, unit = "cm")
-#ggsave(paste0(fig_path, "figure6b_observed_vs_forecasted_simpl.png"), width = 60, height = 30, unit = "cm")
+ggsave(paste0(fig_path, "figure6_observed_vs_forecasted_new.png"), width = 50, height = 50, unit = "cm")
 
 
 

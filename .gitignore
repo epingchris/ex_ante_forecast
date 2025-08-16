@@ -1,6 +1,7 @@
 *.png
 *.csv
 *.log
+*.pdf
 sandbox.r
 ofir.r
 test.r
