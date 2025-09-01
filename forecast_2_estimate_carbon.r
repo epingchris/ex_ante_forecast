@@ -260,7 +260,8 @@ for(i in seq_along(projects)) {
 
 
 # C. Bootstrap outcomes ----
-boot_additionality_list = vector("list", length(projects))
+boot_additionality_arith_list = vector("list", length(projects))
+boot_additionality_geom_list = vector("list", length(projects))
 boot_closs_observed_list = vector("list", length(projects))
 boot_closs_project_list = vector("list", length(projects))
 boot_closs_region_list = vector("list", length(projects))
@@ -275,8 +276,11 @@ for(i in seq_along(projects)) {
   closs_regional = read.csv(paste0(out_path, "_closs_regional_", projects[i], ".csv"), header = T)
   tmax = max(additionality$year)
 
-  #bootstrap ex post additionality accumulation rate: use arithmetic mean of annual additionality
-  boot_additionality_list[[i]] = BootOut(in_df = additionality, column = "additionality_arith", from = t0 + 1, to = tmax) %>%
+  #bootstrap ex post additionality accumulation rate: use geometric mean of annual additionality
+  boot_additionality_arith_list[[i]] = BootOut(in_df = additionality, column = "additionality_arith", from = t0 + 1, to = tmax) %>%
+    mutate(project = project_i)
+
+  boot_additionality_geom_list[[i]] = BootOut(in_df = additionality, column = "additionality_geom", from = t0 + 1, to = tmax) %>%
     mutate(project = project_i)
 
   #bootstrap ex post counterfactual carbon loss rate
@@ -294,12 +298,14 @@ for(i in seq_along(projects)) {
   cat("Project", i, "/", length(projects), "-", projects[i], "- bootstrapping :", format(difftime(b, a, units = "secs")), "\n")
 }
 
-boot_additionality_df = list_rbind(boot_additionality_list)
+boot_additionality_arith_df = list_rbind(boot_additionality_arith_list)
+boot_additionality_geom_df = list_rbind(boot_additionality_geom_list)
 boot_closs_observed_df = list_rbind(boot_closs_observed_list)
 boot_closs_project_df = list_rbind(boot_closs_project_list)
 boot_closs_region_df = list_rbind(boot_closs_region_list)
 
-write.csv(boot_additionality_df, paste0(out_path, "_boot_additionality.csv"), row.names = F)
+write.csv(boot_additionality_arith_df, paste0(out_path, "_boot_additionality_arith.csv"), row.names = F)
+write.csv(boot_additionality_geom_df, paste0(out_path, "_boot_additionality_geom.csv"), row.names = F)
 write.csv(boot_closs_observed_df, paste0(out_path, "_boot_closs_observed.csv"), row.names = F)
 write.csv(boot_closs_project_df, paste0(out_path, "_boot_closs_project.csv"), row.names = F)
 write.csv(boot_closs_region_df, paste0(out_path, "_boot_closs_regional.csv"), row.names = F)
