@@ -55,7 +55,7 @@ if (length(args) == 0) {
 }
 
 #Set parallelise plan
-plan(multisession, workers = 20)
+plan(multisession, workers = 10)
 
 #Load pre-defined functions
 source("FindFiles.r") #wrapper function to search files or folders based on inclusion/exclusion keywords
@@ -192,120 +192,33 @@ for(i in seq_along(projects)) {
            additionality_arith = additionality / (year - t0),
            additionality_geom = additionality ^ (1 / (year - t0)))
 
-  #calculate ex post annual counterfactual carbon loss rates
-  obs_counterfactual = carbon_matched %>%
+  #calculate ex post annual project carbon loss rates
+  obs_project = carbon_matched %>%
     filter(year >= t0) %>%
     group_by(pair) %>%
-    mutate(closs = 1 - (counterfactual / first(counterfactual)) ^ (1 / (year - t0)))
+    mutate(closs = 1 - (project / first(project)) ^ (1 / (year - t0)))
 
-  #calculate historical within-project annual per-area carbon loss rates
-  historical_project = carbon_matched %>%
-    filter(year <= t0) %>%
-    group_by(pair) %>%
-    mutate(closs = 1 - (last(project) / project) ^ (1 / (t0 - year)))
-
-  write.csv(additionality, paste0(out_path, "_additionality_", projects[i], ".csv"), row.names = F)
-  write.csv(obs_counterfactual, paste0(out_path, "_closs_observed_", projects[i], ".csv"), row.names = F)
-  write.csv(historical_project, paste0(out_path, "_closs_project_", projects[i], ".csv"), row.names = F)
-
-  #retrieve carbon time series for surrounding region
-  m_path = FindFiles(paste0(project_dir, projects[i]), "matches.parquet", full = T)
-  setM = setDT(read_parquet(m_path)) #convert to data table for faster subsampling
-  setM_subsamp = setM[sample(.N, 250000, replace = T)] #down-sample to 250000
-
-  #do 100 random 10% sub-samples to allow bootstrapping
-  a = Sys.time()
-  region_boot = future_lapply(1:100, function(j) {
-    subsamp_start = Sys.time()
-    setM_boot = setM_subsamp[sample(.N, 25000, replace = T)]
-    pixels_region = ReformatPixels(in_df = setM_boot, prefix = "", t0 = t0, treatment = "region", pair = j)
-
-    #generate bootstrapped samples of reference carbon density for each luc
-    n_boot = 1000
-    cdens_boot = cdens %>%
-      rowwise() %>%
-      mutate(boot = list(rnorm(n_boot, mean = cdens, sd = se))) %>%
-      ungroup() %>%
-      dplyr::select(boot) %>%
-      unnest_wider(boot, names_sep = "_")
-    carbon_region = vector("list", n_boot)
-    for(k in seq_len(n_boot)) {
-      a = Sys.time()
-      cdens_k = data.frame(luc = 1:6, cdens = cdens_boot[, i])
-      colnames(cdens_k) = c("luc", "cdens")
-      #retrieve carbon time series for project and matched counterfactual
-      carbon_region[[k]] = GetCarbonSeries(pixels_region, t0, area_ha, area_adj_ratio = 1, cdens = cdens_k) %>%
-        mutate(cdens_boot = k)
-      b = Sys.time()
-      cat("Cdens boot", k, ":", format(difftime(b, a, units = "secs")), "\n")
-    }
-    carbon_region = list_rbind(carbon_region)
-    subsamp_end = Sys.time()
-    cat(j, ":", format(difftime(subsamp_end, subsamp_start, units = "secs")), "\n")
-    return(carbon_region)
-  }, future.seed = T)
-  b = Sys.time()
-  cat("Project", i, "/", length(projects), "-", projects[i], "- regional carbon loss :", format(difftime(b, a, units = "secs")), "\n")
-
-  #calculate historical regional annual per-area carbon loss rates
-  historical_region = region_boot %>%
-    list_rbind() %>%
-    mutate(treatment = "region") %>%
-    filter(year <= t0) %>%
-    group_by(pair) %>%
-    mutate(closs = 1 - (last(carbon_density) / carbon_density) ^ (1 / (t0 - year)))
-
-  write.csv(historical_region, paste0(out_path, "_closs_regional_", projects[i], ".csv"), row.names = F)
+  write.csv(obs_project, paste0(out_path, "_closs_observed_project_", projects[i], ".csv"), row.names = F)
 }
 
 
 # C. Bootstrap outcomes ----
-boot_additionality_arith_list = vector("list", length(projects))
-boot_additionality_geom_list = vector("list", length(projects))
-boot_closs_observed_list = vector("list", length(projects))
-boot_closs_project_list = vector("list", length(projects))
-boot_closs_region_list = vector("list", length(projects))
+boot_closs_observed_project_list = vector("list", length(projects))
 
 for(i in seq_along(projects)) {
   a = Sys.time()
   t0 = t0_vec[i]
   project_i = projects[i]
-  additionality = read.csv(paste0(out_path, "_additionality_", projects[i], ".csv"), header = T)
-  closs_observed = read.csv(paste0(out_path, "_closs_observed_", projects[i], ".csv"), header = T)
-  closs_project = read.csv(paste0(out_path, "_closs_project_", projects[i], ".csv"), header = T)
-  closs_regional = read.csv(paste0(out_path, "_closs_regional_", projects[i], ".csv"), header = T)
-  tmax = max(additionality$year)
-
-  #bootstrap ex post additionality accumulation rate: use geometric mean of annual additionality
-  boot_additionality_arith_list[[i]] = BootOut(in_df = additionality, column = "additionality_arith", from = t0 + 1, to = tmax) %>%
-    mutate(project = project_i)
-
-  boot_additionality_geom_list[[i]] = BootOut(in_df = additionality, column = "additionality_geom", from = t0 + 1, to = tmax) %>%
-    mutate(project = project_i)
+  closs_observed_project = read.csv(paste0(out_path, "_closs_observed_project_", projects[i], ".csv"), header = T)
+  tmax = max(closs_observed_project$year)
 
   #bootstrap ex post counterfactual carbon loss rate
-  boot_closs_observed_list[[i]] = BootOut(in_df = closs_observed, column = "closs", from = t0 + 1, to = tmax) %>%
+  boot_closs_observed_project_list[[i]] = BootOut(in_df = closs_observed_project, column = "closs", from = t0 + 1, to = tmax) %>%
     mutate(project = project_i)
 
-  #bootstrap historical carbon loss rate
-  boot_closs_project_list[[i]] = BootOut(in_df = closs_project, column = "closs", from = t0 - 10, to = t0 - 1) %>%
-    mutate(project = project_i)
-
-  #bootstrap historical regional carbon loss rate
-  boot_closs_region_list[[i]] = BootOut(in_df = closs_regional, column = "closs", from = t0 - 10, to = t0 - 1) %>%
-    mutate(project = project_i)
   b = Sys.time()
   cat("Project", i, "/", length(projects), "-", projects[i], "- bootstrapping :", format(difftime(b, a, units = "secs")), "\n")
 }
 
-boot_additionality_arith_df = list_rbind(boot_additionality_arith_list)
-boot_additionality_geom_df = list_rbind(boot_additionality_geom_list)
-boot_closs_observed_df = list_rbind(boot_closs_observed_list)
-boot_closs_project_df = list_rbind(boot_closs_project_list)
-boot_closs_region_df = list_rbind(boot_closs_region_list)
-
-write.csv(boot_additionality_arith_df, paste0(out_path, "_boot_additionality_arith.csv"), row.names = F)
-write.csv(boot_additionality_geom_df, paste0(out_path, "_boot_additionality_geom.csv"), row.names = F)
-write.csv(boot_closs_observed_df, paste0(out_path, "_boot_closs_observed.csv"), row.names = F)
-write.csv(boot_closs_project_df, paste0(out_path, "_boot_closs_project.csv"), row.names = F)
-write.csv(boot_closs_region_df, paste0(out_path, "_boot_closs_regional.csv"), row.names = F)
+boot_closs_observed_project_df = list_rbind(boot_closs_observed_project_list)
+write.csv(boot_closs_observed_project_df, paste0(out_path, "_boot_closs_observed_project.csv"), row.names = F)
