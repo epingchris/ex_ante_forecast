@@ -28,7 +28,7 @@ library(grid) #grid::textGrob, grid::gpar
 #Set parallelise plan
 plan(multisession, workers = 20)
 
-#Min-max normalization function
+#Set up wrapper functions for performance metrics
 GOF = function(forecast, observed) {
   return(1 - sum((observed - forecast) ^ 2, na.rm = T) / sum((observed - mean(observed, na.rm = T)) ^ 2, na.rm = T))
 }
@@ -55,12 +55,14 @@ cdens_list = project_var %>%
 
 #Load data and express them as relative to project start
 boot_add = read.csv(paste0(out_path, "_boot_additionality_arith.csv"), header = T)
-boot_closs_observed = read.csv(paste0(out_path, "_boot_closs_observed.csv"), header = T)
+boot_closs_obs_cf = read.csv(paste0(out_path, "_boot_closs_observed.csv"), header = T)
+boot_closs_obs_p = read.csv(paste0(out_path, "_boot_closs_observed_project.csv"), header = T)
 boot_closs_project = read.csv(paste0(out_path, "_boot_closs_project.csv"), header = T)
 boot_closs_region = read.csv(paste0(out_path, "_boot_closs_regional.csv"), header = T)
 
 boot_add_list = vector("list", length(projects))
-boot_closs_observed_list = vector("list", length(projects))
+boot_closs_obs_cf_list = vector("list", length(projects))
+boot_closs_obs_p_list = vector("list", length(projects))
 boot_closs_project_list = vector("list", length(projects))
 boot_closs_region_list = vector("list", length(projects))
 
@@ -70,7 +72,10 @@ for(i in seq_along(projects)) {
   boot_add_list[[i]] = boot_add %>%
       filter(project == project_i) %>%
       mutate(year = year - t0)
-  boot_closs_observed_list[[i]] = boot_closs_observed %>%
+  boot_closs_obs_cf_list[[i]] = boot_closs_obs_cf %>%
+      filter(project == project_i) %>%
+      mutate(year = year - t0)
+  boot_closs_obs_p_list[[i]] = boot_closs_obs_p %>%
       filter(project == project_i) %>%
       mutate(year = year - t0)
   boot_closs_project_list[[i]] = boot_closs_project %>%
@@ -82,12 +87,18 @@ for(i in seq_along(projects)) {
 }
 
 boot_add_rel = list_rbind(boot_add_list)
-boot_closs_observed_rel = list_rbind(boot_closs_observed_list)
+boot_closs_obs_cf_rel = list_rbind(boot_closs_obs_cf_list)
+boot_closs_obs_p_rel = list_rbind(boot_closs_obs_p_list)
 boot_closs_project_rel = list_rbind(boot_closs_project_list)
 boot_closs_region_rel = list_rbind(boot_closs_region_list)
 
 #Reformat data of observed counterfactual carbon loss rates and make sure every project has 10 years of data
-observed = boot_closs_observed_rel %>%
+closs_obs_cf = boot_closs_obs_cf_rel %>%
+  filter(year <= 10) %>%
+  rename(period_target = year, rate_obs = mean) %>%
+  complete(project, period_target = 1:10, fill = list(rate_obs = NA_real_))
+
+closs_obs_p = boot_closs_obs_p_rel %>%
   filter(year <= 10) %>%
   rename(period_target = year, rate_obs = mean) %>%
   complete(project, period_target = 1:10, fill = list(rate_obs = NA_real_))
@@ -158,24 +169,32 @@ forecast_mix = list_rbind(forecast_mix_list) %>%
 
 # Merge with observed values
 forecast_all = bind_rows(forecast_prj, forecast_reg, forecast_mix) %>%
-  left_join(observed, by = c("project", "period_target"))
-
-# Summarise forecasting performance
-forecast_summ = forecast_all %>%
-  group_by(period_hist_prj, period_hist_reg, period_target, type) %>%
-  summarise(r2 = cor(forecast, rate_obs, use = "complete.obs") ^ 2,
-            mape = MAPE(forecast, rate_obs),
-            mpb = MPB(forecast, rate_obs)) %>%
-  ungroup()
+  left_join(closs_obs_cf, by = c("project", "period_target")) %>%
+  left_join(closs_obs_p, by = c("project", "period_target")) %>%
+  left_join(observed_add, by = c("project", "period_target")) %>%
+  dplyr::select(!starts_with("ci_")) %>%
+  rename(closs_obs_cf = rate_obs.x, closs_obs_p = rate_obs.y, add_obs = additionality)
 
 write.csv(forecast_all, paste0(out_path, "_forecast.csv"), row.names = F)
-write.csv(forecast_summ, paste0(out_path, "_forecast_summary.csv"), row.names = F)
 
 forecast_all = read.csv(paste0(out_path, "_forecast.csv"), header = T)
-forecast_summ_geom = read.csv(paste0(out_path, "_forecast_summary.csv"), header = T)
 
 
-#Plot Figure 5. Overall forecasting performances (mean and range of r2, MAPE and MPB) for each type of forecasts across all target periods
+#Plot Figure 5. ----
+#Overall forecasting performances (mean and range of r2, MAPE and MPB) for each type of forecasts across all target periods
+
+# Summarise forecasting performance for observed counterfactual carbon loss
+forecast_summ_closs_cf = forecast_all %>%
+  group_by(period_hist_prj, period_hist_reg, period_target, type) %>%
+  summarise(r2 = cor(forecast, closs_obs_cf, use = "complete.obs") ^ 2,
+            mape = MAPE(forecast, closs_obs_cf),
+            mpb = MPB(forecast, closs_obs_cf)) %>%
+  ungroup()
+
+write.csv(forecast_summ_closs_cf, paste0(out_path, "_forecast_summary_closs_cf.csv"), row.names = F)
+forecast_summ_closs_cf = read.csv(paste0(out_path, "_forecast_summary_closs_cf.csv"), header = T)
+
+
 figure5_list = vector("list", 0)
 for(var in c("r2", "mape", "mpb")) {
   figtitle = switch(var,
@@ -191,7 +210,7 @@ for(var in c("r2", "mape", "mpb")) {
              "mape" = expression(`MAPE (%)`),
              "mpb" = expression(`MPB (%)`))
 
-  forecast_summ_plot = forecast_summ %>%
+  forecast_summ_plot = forecast_summ_closs_cf %>%
     dplyr::select(any_of(c("type", var, "period_target"))) %>%
     group_by(type, period_target) %>%
     summarise(mean = mean(.data[[var]], na.rm = T),
@@ -226,33 +245,32 @@ for(var in c("r2", "mape", "mpb")) {
 figure5_full = figure5_list[[1]] / figure5_list[[2]] / figure5_list[[3]] +
   plot_layout(guide = "collect", axes = "collect", axis_titles = "collect") &
   theme(legend.position = "bottom")
-
 ggsave(paste0(fig_path, "figure5_perc.png"), width = 40, height = 60, unit = "cm")
 
 
 #Determine the best forecasts using overall rankings of r2, MAPE and MPB for 5-year and 10-year forecasts
-forecast_summ_5 = forecast_summ %>%
+forecast_summ_closs_cf_5 = forecast_summ_closs_cf %>%
   filter(period_target == 5) %>%
   mutate(r2_rank = rank(-r2, na.last = NA), mape_rank = rank(mape, na.last = NA), mpb_rank = rank(abs(mpb), na.last = NA))
-forecast_summ_10 = forecast_summ %>%
+forecast_summ_closs_cf_10 = forecast_summ_closs_cf %>%
   filter(period_target == 10) %>%
   mutate(r2_rank = rank(-r2, na.last = NA), mape_rank = rank(mape, na.last = NA), mpb_rank = rank(abs(mpb), na.last = NA))
-forecast_summ_rank = bind_rows(forecast_summ_5, forecast_summ_10) %>%
+forecast_summ_closs_cf_rank = bind_rows(forecast_summ_closs_cf_5, forecast_summ_closs_cf_10) %>%
   pivot_wider(names_from = period_target,
               values_from = c(r2, mape, mpb, r2_rank, mape_rank, mpb_rank),
               names_sep = "_") %>%
   mutate(sum_rank = r2_rank_5 + mape_rank_5 + mpb_rank_5 + r2_rank_10 + mape_rank_10 + mpb_rank_10)
-filter(forecast_summ_rank, sum_rank <= quantile(sum_rank, 0.1, na.rm = T))
+filter(forecast_summ_closs_cf_rank, sum_rank <= quantile(sum_rank, 0.1, na.rm = T))
 #best forecast: mixed with project_used = -10 and region_used = -7
 
-table_1 = forecast_summ_rank %>%
+table_1 = forecast_summ_closs_cf_rank %>%
   filter(sum_rank <= quantile(sum_rank, 0.1, na.rm = T)) %>%
   dplyr::select(period_hist_prj, period_hist_reg, type, r2_5, r2_10, mape_5, mape_10, mpb_5, mpb_10, sum_rank) %>%
   arrange(sum_rank)
 write.csv(table_1, paste0(fig_path, "table_1.csv"), row.names = F)
 
 
-#Linear model to predict carbon credit production over five-year and ten-year target periods
+#Compile data for model prediction ----
 envir_var = project_var %>%
   dplyr::select(!c(country, t0, code) & !starts_with(c("cdens", "n_", "se_")))
 envir_var_cor = cor(envir_var %>% dplyr::select(!ID))
@@ -265,62 +283,47 @@ envir_var = project_var %>%
 envir_var_cor = cor(envir_var %>% dplyr::select(!ID))
 corrplot(envir_var_cor, type = "lower", order = "hclust", addCoef.col = "black", diag = F)
 
-forecast_var = forecast_all %>%
+best_forecast_var = forecast_all %>%
   filter(period_hist_prj == -10 & period_hist_reg == -7 & period_target %in% c(5, 10)) %>%
-  dplyr::select(c(period_target, forecast, project)) %>%
-  pivot_wider(names_from = "period_target", values_from = "forecast", names_prefix = "forecast_")
+  dplyr::select(!c(period_hist_prj, period_hist_reg, type)) %>%
+  pivot_wider(names_from = period_target, values_from = c(forecast, closs_obs_cf, closs_obs_p, add_obs))
 
-observed_var = observed %>%
-  filter(period_target %in% c(5, 10)) %>%
-  dplyr::select(c(period_target, project, rate_obs)) %>%
-  pivot_wider(names_from = "period_target", values_from = "rate_obs", names_prefix = "obs_closs_")
-
-observed_add_var = observed_add %>%
-  filter(period_target %in% c(5, 10)) %>%
-  dplyr::select(c(period_target, project, additionality)) %>%
-  pivot_wider(names_from = "period_target", values_from = "additionality", names_prefix = "obs_add_")
-
-model_df = left_join(forecast_var, envir_var, join_by(project == ID)) %>%
+model_df = left_join(best_forecast_var, envir_var, join_by(project == ID)) %>%
   left_join(observed_var, ., join_by(project == project)) %>%
   left_join(observed_add_var, ., join_by(project == project))
 model_df_scaled = model_df %>%
-  mutate(across(-c(project, obs_add_5, obs_add_10, obs_closs_5, obs_closs_10), ~ as.numeric(scale(.)))) #scale and center all predictor columns except project
+  mutate(across(-c(project, matches("(_5|_10)$")), ~ as.numeric(scale(.)))) #scale and center all predictor columns except project
 
 
-#Plot observed vs predicted carbon credit production for 5-year and 10-year forecasts
+#Plot Figure 6. ----
+#Observed vs predicted carbon credit production for 5-year and 10-year forecasts
 plots_obs_closs = vector("list", 2)
-plots_full = vector("list", 2)
-plots_naive = vector("list", 2)
-plots_sel = vector("list", 2)
-R2_df = as.data.frame(matrix(nrow = 2, ncol = 3)) %>% set_colnames(c("full", "naive", "sel")) %>% set_rownames(c("5", "10"))
-mape_df = as.data.frame(matrix(nrow = 2, ncol = 3)) %>% set_colnames(c("full", "naive", "sel")) %>% set_rownames(c("5", "10"))
-mpb_df = as.data.frame(matrix(nrow = 2, ncol = 3)) %>% set_colnames(c("full", "naive", "sel")) %>% set_rownames(c("5", "10"))
 
 for(i in 1:2) {
   yr_sel = c(5, 10)[i]
   yr_excl = c(10, 5)[i]
   figtitle = c("Five-year prediction", "Ten-year prediction")[i]
 
-  model_df_selected0 = model_df_scaled %>%
-    dplyr::select(ends_with(as.character(yr_sel)) & !starts_with("obs_add")) %>%
-    rename(obs_closs = colnames(.)[1], forecast = colnames(.)[2])
+  model_df_selected = model_df_scaled %>%
+    dplyr::select(ends_with(as.character(yr_sel)) & starts_with(c("forecast", "closs_obs_cf"))) %>%
+    rename(forecast = colnames(.)[1], closs_obs_cf = colnames(.)[2])
 
-  forecast_lm_closs = lm(obs_closs ~ forecast, data = model_df_selected0) #model predicting observed counterfactual carbon loss
+  forecast_lm_closs_cf = lm(closs_obs_cf ~ forecast, data = model_df_selected) #model predicting observed counterfactual carbon loss
   #Calculate predictions
-  pred_df0 = data.frame(prediction = predict(forecast_lm_closs),
-                        observed = forecast_lm_closs$model$obs_closs)
+  pred_df = data.frame(prediction = predict(forecast_lm_closs_cf),
+                       observed = forecast_lm_closs_cf$model$closs_obs_cf)
 
   #Calculate goodness-of-fit (R2 over 1:1 line)
-  R2_closs = GOF(pred_df0$prediction, pred_df0$observed)
+  R2_closs = GOF(pred_df$prediction, pred_df$observed)
 
   #Calculate mean absolute percentage error (MAPE)
-  mape_closs = MAPE(pred_df0$prediction, pred_df0$observed)
+  mape_closs = MAPE(pred_df$prediction, pred_df$observed)
 
   #Calculate mean percentage bias (MPB)
-  mpb_closs = MPB(pred_df0$prediction, pred_df0$observed)
+  mpb_closs = MPB(pred_df$prediction, pred_df$observed)
 
   #Plot model (observed vs predicted counterfactual carbon loss)
-  plots_obs_closs[[i]] = ggplot(data = pred_df0) +
+  plots_obs_closs[[i]] = ggplot(data = pred_df) +
     geom_point(aes(x = prediction, y = observed), size = 3) +
     geom_abline(intercept = 0, slope = 1, linetype = "dashed") +
     annotate(geom = "text", x = 0.05, y = 0.03, size = 10,
@@ -344,6 +347,29 @@ for(i in 1:2) {
           axis.text.y = element_text(size = 24),
           axis.ticks = element_blank(),
           axis.line = element_line(color = "black"))
+}
+
+plot_closs_panel = plots_obs_closs[[1]] + plots_obs_closs[[2]] +
+  plot_layout(axes = "collect", axis_titles = "collect")
+title_y = wrap_elements(grid::textGrob(bquote(paste("Observed counterfactual carbon loss (MgC ", ha^-1, " ", yr^-1, ")")),
+                                       rot = 90, gp = gpar(fontsize = 28)))
+plot_closs_all = title_y + plot_closs_panel +
+  plot_layout(width = c(0.02, 1))
+ggsave(paste0(fig_path, "figure6_closs_cf_observed_vs_forecasted.png"), width = 60, height = 30, unit = "cm")
+
+
+#@@@Linear model predicting observed project carbon loss for 5-year and 10-year intervals ----
+plots_full = vector("list", 2)
+plots_naive = vector("list", 2)
+plots_sel = vector("list", 2)
+R2_df = as.data.frame(matrix(nrow = 2, ncol = 3)) %>% set_colnames(c("full", "naive", "sel")) %>% set_rownames(c("5", "10"))
+mape_df = as.data.frame(matrix(nrow = 2, ncol = 3)) %>% set_colnames(c("full", "naive", "sel")) %>% set_rownames(c("5", "10"))
+mpb_df = as.data.frame(matrix(nrow = 2, ncol = 3)) %>% set_colnames(c("full", "naive", "sel")) %>% set_rownames(c("5", "10"))
+
+for(i in 1:2) {
+  yr_sel = c(5, 10)[i]
+  yr_excl = c(10, 5)[i]
+  figtitle = c("Five-year prediction", "Ten-year prediction")[i]
 
   model_df_selected = model_df_scaled %>%
     dplyr::select(!project & !ends_with(as.character(yr_excl)) & !starts_with("obs_closs")) %>%
