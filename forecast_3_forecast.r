@@ -293,6 +293,9 @@ model_df = left_join(best_forecast_var, envir_var, join_by(project == ID)) %>%
   left_join(observed_add_var, ., join_by(project == project))
 model_df_scaled = model_df %>%
   mutate(across(-c(project, matches("(_5|_10)$")), ~ as.numeric(scale(.)))) #scale and center all predictor columns except project
+write.csv(model_df_scaled, paste0(fig_path, "model_df_scaled.csv"), row.names = F)
+
+model_df_scaled = read.csv(paste0(fig_path, "model_df_scaled.csv"), header = T)
 
 
 #Plot Figure 6. ----
