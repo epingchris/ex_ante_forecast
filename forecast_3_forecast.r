@@ -54,8 +54,8 @@ cdens_list = project_var %>%
 
 #Load data and express them as relative to project start
 boot_add = read.csv(paste0(out_path, "_boot_additionality_arith.csv"), header = T)
-boot_closs_obs_cf = read.csv(paste0(out_path, "_boot_closs_observed.csv"), header = T)
-boot_closs_obs_p = read.csv(paste0(out_path, "_boot_closs_observed_project.csv"), header = T)
+boot_closs_obs_cf = read.csv(paste0(out_path, "_boot_closs_obs_cf.csv"), header = T)
+boot_closs_obs_p = read.csv(paste0(out_path, "_boot_closs_obs_p.csv"), header = T)
 boot_closs_project = read.csv(paste0(out_path, "_boot_closs_project.csv"), header = T)
 boot_closs_region = read.csv(paste0(out_path, "_boot_closs_regional.csv"), header = T)
 

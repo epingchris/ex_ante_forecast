@@ -198,6 +198,12 @@ for(i in seq_along(projects)) {
     group_by(pair) %>%
     mutate(closs = 1 - (counterfactual / first(counterfactual)) ^ (1 / (year - t0)))
 
+  #calculate ex post annual project carbon loss rates
+  obs_project = carbon_matched %>%
+    filter(year >= t0) %>%
+    group_by(pair) %>%
+    mutate(closs = 1 - (project / first(project)) ^ (1 / (year - t0)))
+
   #calculate historical within-project annual per-area carbon loss rates
   historical_project = carbon_matched %>%
     filter(year <= t0) %>%
@@ -205,7 +211,8 @@ for(i in seq_along(projects)) {
     mutate(closs = 1 - (last(project) / project) ^ (1 / (t0 - year)))
 
   write.csv(additionality, paste0(out_path, "_additionality_", projects[i], ".csv"), row.names = F)
-  write.csv(obs_counterfactual, paste0(out_path, "_closs_observed_", projects[i], ".csv"), row.names = F)
+  write.csv(obs_counterfactual, paste0(out_path, "_closs_obs_cf_", projects[i], ".csv"), row.names = F)
+  write.csv(obs_project, paste0(out_path, "_closs_obs_p_", projects[i], ".csv"), row.names = F)
   write.csv(historical_project, paste0(out_path, "_closs_project_", projects[i], ".csv"), row.names = F)
 
   #retrieve carbon time series for surrounding region
@@ -262,7 +269,8 @@ for(i in seq_along(projects)) {
 # C. Bootstrap outcomes ----
 boot_additionality_arith_list = vector("list", length(projects))
 boot_additionality_geom_list = vector("list", length(projects))
-boot_closs_observed_list = vector("list", length(projects))
+boot_closs_obs_cf_list = vector("list", length(projects))
+boot_closs_obs_p_list = vector("list", length(projects))
 boot_closs_project_list = vector("list", length(projects))
 boot_closs_region_list = vector("list", length(projects))
 
@@ -271,7 +279,8 @@ for(i in seq_along(projects)) {
   t0 = t0_vec[i]
   project_i = projects[i]
   additionality = read.csv(paste0(out_path, "_additionality_", projects[i], ".csv"), header = T)
-  closs_observed = read.csv(paste0(out_path, "_closs_observed_", projects[i], ".csv"), header = T)
+  closs_obs_cf = read.csv(paste0(out_path, "_closs_obs_cf_", projects[i], ".csv"), header = T)
+  closs_obs_p = read.csv(paste0(out_path, "_closs_obs_p_", projects[i], ".csv"), header = T)
   closs_project = read.csv(paste0(out_path, "_closs_project_", projects[i], ".csv"), header = T)
   closs_regional = read.csv(paste0(out_path, "_closs_regional_", projects[i], ".csv"), header = T)
   tmax = max(additionality$year)
@@ -284,7 +293,11 @@ for(i in seq_along(projects)) {
     mutate(project = project_i)
 
   #bootstrap ex post counterfactual carbon loss rate
-  boot_closs_observed_list[[i]] = BootOut(in_df = closs_observed, column = "closs", from = t0 + 1, to = tmax) %>%
+  boot_closs_obs_cf_list[[i]] = BootOut(in_df = closs_obs_cf, column = "closs", from = t0 + 1, to = tmax) %>%
+    mutate(project = project_i)
+
+  #bootstrap ex post project carbon loss rate
+  boot_closs_obs_p_list[[i]] = BootOut(in_df = closs_obs_p, column = "closs", from = t0 + 1, to = tmax) %>%
     mutate(project = project_i)
 
   #bootstrap historical carbon loss rate
@@ -300,12 +313,14 @@ for(i in seq_along(projects)) {
 
 boot_additionality_arith_df = list_rbind(boot_additionality_arith_list)
 boot_additionality_geom_df = list_rbind(boot_additionality_geom_list)
-boot_closs_observed_df = list_rbind(boot_closs_observed_list)
+boot_closs_obs_cf_df = list_rbind(boot_closs_obs_cf_list)
+boot_closs_obs_p_df = list_rbind(boot_closs_obs_p_list)
 boot_closs_project_df = list_rbind(boot_closs_project_list)
 boot_closs_region_df = list_rbind(boot_closs_region_list)
 
 write.csv(boot_additionality_arith_df, paste0(out_path, "_boot_additionality_arith.csv"), row.names = F)
 write.csv(boot_additionality_geom_df, paste0(out_path, "_boot_additionality_geom.csv"), row.names = F)
-write.csv(boot_closs_observed_df, paste0(out_path, "_boot_closs_observed.csv"), row.names = F)
+write.csv(boot_closs_obs_cf_df, paste0(out_path, "_boot_closs_obs_cf.csv"), row.names = F)
+write.csv(boot_closs_obs_p_df, paste0(out_path, "_boot_closs_obs_p.csv"), row.names = F)
 write.csv(boot_closs_project_df, paste0(out_path, "_boot_closs_project.csv"), row.names = F)
 write.csv(boot_closs_region_df, paste0(out_path, "_boot_closs_regional.csv"), row.names = F)
