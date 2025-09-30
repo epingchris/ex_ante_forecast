@@ -1,7 +1,6 @@
 # This script generates a dataframe containing the information needed for subsequent analysis and saves it as out_path/project_var.csv
 # The dataframe contains the following columns:
-# code: anonymised project code (for ongoing projects)
-# ID: project ID
+# project: project ID
 # country: project country
 # t0: project start year
 # area_ha: project area in hectares
@@ -42,7 +41,7 @@ if(analysis_type == "ongoing") {
   #load basic information (csv file copied from Tom's directory)
   proj_info = read.csv("proj_meta.csv") %>%
     dplyr::select(ID, COUNTRY, t0) %>%
-    rename(country = COUNTRY)
+    rename(project = ID, country = COUNTRY)
 
   #standardise country names: Lao => Lao PDR, Congo, Dem Rep of the => Congo, Dem. Rep.
   proj_info$country[proj_info$country == "Lao"] = "Lao PDR"
@@ -56,7 +55,7 @@ if(analysis_type == "ongoing") {
   #load basic information
   proj_info = read.csv("proj_meta_placebo.csv") %>%
     dplyr::select(ID, COUNTRY, t0) %>%
-    rename(country = COUNTRY)
+    rename(project = ID, country = COUNTRY)
 
   #define include and exclude strings
   include_strings = c("asn", "af", "sa")
@@ -105,7 +104,7 @@ projects_status = data.frame(project = projects, carbon_complete = is_carbon_com
 projects = subset(projects_status, carbon_complete & done)$project
 
 #Retrieve project variables
-project_var = proj_info[match(projects, proj_info$ID), ]
+project_var = proj_info[match(projects, proj_info$project), ]
 
 #Retrieve project areas (ha)
 polygon_paths = paste0(polygon_dir, projects, ".geojson")
@@ -130,14 +129,7 @@ cdens_df = lapply(cdens_list, function(x) {
   }
   }) %>%
   list_rbind()
-project_var = merge(project_var, cdens_df, by.x = "ID", by.y = "project", all.x = T)
-
-#Add anonymous project code
-if(analysis_type == "ongoing") {
-  project_var = project_var %>%
-    mutate(code = LETTERS[1:nrow(project_var)]) %>%
-    relocate(code, .before = "ID")
-}
+project_var = merge(project_var, cdens_df, by.x = "project", by.y = "project", all.x = T)
 
 #Retrieve project-level environmental characteristics
 var_envir_list = vector("list", length(projects))
@@ -165,7 +157,7 @@ gdppc = read.csv("/maps/epr26/API_NY.GDP.PCAP.CD_DS2_en_csv_v2_85121.csv", heade
 
 project_var$gdppc_mean = NA
 project_var$gdppc_rate = NA
-for(i in seq_along(project_var$ID)) {
+for(i in seq_along(project_var$project)) {
   country_i = project_var[i, ]$country
   t0_i = project_var[i, ]$t0
   gdppc_i = subset(gdppc, Country.Name == country_i & year <= t0_i & year >= t0_i - 5)
@@ -181,7 +173,7 @@ wgicc = read.csv("/maps/epr26/wgidataset.csv", header = T) %>%
   mutate(estimate = as.numeric(estimate))
 
 project_var$wgicc_mean = NA
-for(i in seq_along(project_var$ID)) {
+for(i in seq_along(project_var$project)) {
   country_i = project_var[i, ]$country
   t0_i = project_var[i, ]$t0
   wgicc_i = subset(wgicc, countryname == country_i & year <= t0_i & year >= t0_i - 5)
@@ -191,4 +183,3 @@ for(i in seq_along(project_var$ID)) {
 #Output
 write.csv(projects_status, paste0(out_path, "_project_status.csv"), row.names = F) #project status check results
 write.csv(project_var, paste0(out_path, "_project_var.csv"), row.names = F) #project-level variables
-write.csv(subset(project_var, select = -ID), paste0(out_path, "_project_var_anon.csv"), row.names = F) #anonymised project information

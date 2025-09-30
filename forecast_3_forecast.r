@@ -16,6 +16,7 @@ library(tidyverse) #ggplot2, dplyr, and stringr used in plotPlacebo/plotBaseline
 library(magrittr) #pipe operators
 library(corrplot) #corrplot::corrplot
 library(MASS) #MASS::stepAIC
+library(rsq)
 library(patchwork)
 library(gridExtra)
 library(grid) #grid::textGrob, grid::gpar
@@ -23,9 +24,6 @@ library(httpgd)
 
 source("PlotModel.r")
 hgd()
-
-#Set parallelise plan
-plan(multisession, workers = 20)
 
 #Set up wrapper functions for performance metrics
 GOF = function(forecast, observed) {
@@ -43,13 +41,13 @@ out_path = "/maps/epr26/ex_ante_forecast_out/out_ongoing" #path of files generat
 fig_path = "/maps/epr26/ex_ante_forecast_out/out_" #path of output figures
 
 project_var = read.csv(paste0(out_path, "_project_var.csv"), header = T)
-projects = project_var$ID
+projects = project_var$project
 t0_vec = project_var$t0
 area_ha_vec = project_var$area_ha
 cdens_list = project_var %>%
-  dplyr::select(ID, cdens_1:cdens_6) %>%
+  dplyr::select(project, cdens_1:cdens_6) %>%
   pivot_longer(cdens_1:cdens_6, names_to = "land.use.class", names_prefix = "cdens_", values_to = "carbon.density") %>%
-  split(f = .$ID)
+  split(f = .$project)
 
 
 #Load data and express them as relative to project start
@@ -175,7 +173,6 @@ forecast_all = bind_rows(forecast_prj, forecast_reg, forecast_mix) %>%
   rename(closs_obs_cf = rate_obs.x, closs_obs_p = rate_obs.y, add_obs = additionality)
 
 write.csv(forecast_all, paste0(out_path, "_forecast.csv"), row.names = F)
-
 forecast_all = read.csv(paste0(out_path, "_forecast.csv"), header = T)
 
 
@@ -239,57 +236,92 @@ for(var in c("r2", "mape", "mpb")) {
           legend.title = element_text(size = 26),
           legend.text = element_text(size = 24),
           legend.key.size = unit(1.5, "cm"))
+  if(var == "mpb") {
+    figure5_list[[var]] = figure5_list[[var]] +
+      geom_hline(yintercept = 0, linetype = "dashed")
+  }
 }
 
 figure5_full = figure5_list[[1]] / figure5_list[[2]] / figure5_list[[3]] +
   plot_layout(guide = "collect", axes = "collect", axis_titles = "collect") &
   theme(legend.position = "bottom")
-ggsave(paste0(fig_path, "figure5_overall_predictive_performance.png"), width = 40, height = 60, unit = "cm")
+ggsave(paste0(fig_path, "figure_5_overall_predictive_performance.png"), width = 40, height = 60, unit = "cm")
 
 
 #Determine the best forecasts using overall rankings of r2, MAPE and MPB for 5-year and 10-year forecasts
 forecast_summ_closs_cf_5 = forecast_summ_closs_cf %>%
   filter(period_target == 5) %>%
-  mutate(r2_rank = rank(-r2, na.last = NA), mape_rank = rank(mape, na.last = NA), mpb_rank = rank(abs(mpb), na.last = NA))
+  mutate(r2_rank = rank(-r2, na.last = NA), mape_rank = rank(mape, na.last = NA), mpb_rank = rank(abs(mpb), na.last = NA)) %>%
+  mutate(sum_rank = r2_rank + mape_rank + mpb_rank)
 forecast_summ_closs_cf_10 = forecast_summ_closs_cf %>%
   filter(period_target == 10) %>%
-  mutate(r2_rank = rank(-r2, na.last = NA), mape_rank = rank(mape, na.last = NA), mpb_rank = rank(abs(mpb), na.last = NA))
+  mutate(r2_rank = rank(-r2, na.last = NA), mape_rank = rank(mape, na.last = NA), mpb_rank = rank(abs(mpb), na.last = NA)) %>%
+  mutate(sum_rank = r2_rank + mape_rank + mpb_rank)
 forecast_summ_closs_cf_rank = bind_rows(forecast_summ_closs_cf_5, forecast_summ_closs_cf_10) %>%
   pivot_wider(names_from = period_target,
-              values_from = c(r2, mape, mpb, r2_rank, mape_rank, mpb_rank),
+              values_from = c(r2, mape, mpb, r2_rank, mape_rank, mpb_rank, sum_rank),
               names_sep = "_") %>%
-  mutate(sum_rank = r2_rank_5 + mape_rank_5 + mpb_rank_5 + r2_rank_10 + mape_rank_10 + mpb_rank_10)
-filter(forecast_summ_closs_cf_rank, sum_rank <= quantile(sum_rank, 0.1, na.rm = T))
+  mutate(sum_rank_tot = sum_rank_5 + sum_rank_10)
+best_5 = forecast_summ_closs_cf_rank %>%
+  filter(sum_rank_5 <= quantile(sum_rank_5, 0.1, na.rm = T)) %>%
+  dplyr::select(type, period_hist_prj, period_hist_reg, r2_5, mape_5, mpb_5, sum_rank_5) %>%
+  arrange(sum_rank_5) %>%
+  mutate(across(c(r2_5, mape_5, mpb_5), ~ round(., 2)))
+best_10 = forecast_summ_closs_cf_rank %>%
+  filter(sum_rank_10 <= quantile(sum_rank_10, 0.1, na.rm = T)) %>%
+  dplyr::select(type, period_hist_prj, period_hist_reg, r2_10, mape_10, mpb_10, sum_rank_10) %>%
+  arrange(sum_rank_10) %>%
+  mutate(across(c(r2_10, mape_10, mpb_10), ~ round(., 2)))
+best_tot = forecast_summ_closs_cf_rank %>%
+  filter(sum_rank_tot <= quantile(sum_rank_tot, 0.1, na.rm = T)) %>%
+  dplyr::select(type, period_hist_prj, period_hist_reg, r2_5, mape_5, mpb_5, sum_rank_5, r2_10, mape_10, mpb_10, sum_rank_10, sum_rank_tot) %>%
+  arrange(sum_rank_tot) %>%
+  mutate(across(c(r2_5, mape_5, mpb_5, r2_10, mape_10, mpb_10), ~ round(., 2)))
 #best forecast: mixed with project_used = -10 and region_used = -7
 
-table_1 = forecast_summ_closs_cf_rank %>%
-  filter(sum_rank <= quantile(sum_rank, 0.1, na.rm = T)) %>%
-  dplyr::select(period_hist_prj, period_hist_reg, type, r2_5, r2_10, mape_5, mape_10, mpb_5, mpb_10, sum_rank) %>%
-  arrange(sum_rank)
-write.csv(table_1, paste0(fig_path, "table_1.csv"), row.names = F)
+write.csv(best_5, paste0(fig_path, "table_1_best_5.csv"), row.names = F)
+write.csv(best_10, paste0(fig_path, "table_1_best_10.csv"), row.names = F)
 
 
 #Compile data for model prediction ----
 envir_var = project_var %>%
-  dplyr::select(!c(country, t0, code) & !starts_with(c("cdens", "n_", "se_")))
-envir_var_cor = cor(envir_var %>% dplyr::select(!ID))
+  dplyr::select(!c(country, t0) & !starts_with(c("cdens", "n_", "se_")))
+envir_var_cor = cor(envir_var %>% dplyr::select(!project))
 corrplot(envir_var_cor, type = "lower", order = "hclust", addCoef.col = "black", diag = F)
 #prj_ and reg_ environmental variables highly correlated: remove reg_
 #slope and elevation highly correlated: remove elevation
 
 envir_var = project_var %>%
-  dplyr::select(!c(country, t0, code, prj_elev) & !starts_with(c("cdens", "n_", "se_", "reg_")))
-envir_var_cor = cor(envir_var %>% dplyr::select(!ID))
+  dplyr::select(!c(country, t0, prj_elev) & !starts_with(c("cdens", "n_", "se_", "reg_")))
+envir_var_cor = cor(envir_var %>% dplyr::select(!project))
 corrplot(envir_var_cor, type = "lower", order = "hclust", addCoef.col = "black", diag = F)
 
-best_forecast_var = forecast_all %>%
-  filter(period_hist_prj == -10 & period_hist_reg == -7 & period_target %in% c(5, 10)) %>%
+#initial carbon stock
+c_init_var = lapply(seq_along(projects), function(i) {
+  t0 = t0_vec[i]
+  add_i = read.csv(paste0(out_path, "_additionality_", projects[i], ".csv"), header = T)
+  c_init_i = mean(subset(add_i, year == t0)$project, na.rm = T)
+  c_init_df = data.frame(project = projects[i], c_init = c_init_i)
+  return(c_init_df)
+}) %>%
+  list_rbind()
+
+#best 5-year forecast
+forecast_obs_5_var = forecast_all %>%
+  filter(period_hist_prj == -7 & period_hist_reg == -7 & period_target == 5) %>%
   dplyr::select(!c(period_hist_prj, period_hist_reg, type)) %>%
   pivot_wider(names_from = period_target, values_from = c(forecast, closs_obs_cf, closs_obs_p, add_obs))
 
-model_df = left_join(best_forecast_var, envir_var, join_by(project == ID)) %>%
-  left_join(observed_var, ., join_by(project == project)) %>%
-  left_join(observed_add_var, ., join_by(project == project))
+#best 10-year forecast
+forecast_obs_10_var = forecast_all %>%
+  filter(period_hist_prj == -7 & is.na(period_hist_reg) & period_target == 10) %>% #best 10-year predictions
+  dplyr::select(!c(period_hist_prj, period_hist_reg, type)) %>%
+  pivot_wider(names_from = period_target, values_from = c(forecast, closs_obs_cf, closs_obs_p, add_obs))
+
+model_df = list(envir_var, c_init_var, forecast_obs_5_var, forecast_obs_10_var) %>% reduce(left_join, by = "project") %>%
+  mutate(add_rate_5 = closs_obs_cf_5 - closs_obs_p_5,
+         add_rate_10 = closs_obs_cf_10 - closs_obs_p_10)
+
 model_df_scaled = model_df %>%
   mutate(across(-c(project, matches("(_5|_10)$")), ~ as.numeric(scale(.)))) #scale and center all predictor columns except project
 write.csv(model_df_scaled, paste0(fig_path, "model_df_scaled.csv"), row.names = F)
@@ -304,11 +336,11 @@ plot_cf_10 = PlotModel(yr = 10, type = "cf")
 
 plot_cf_panel = plot_cf_5$plot + plot_cf_10$plot +
   plot_layout(axes = "collect", axis_titles = "collect")
-title_y = wrap_elements(grid::textGrob(paste("Observed annual counterfactual carbon loss (%)"),
+title_y = wrap_elements(grid::textGrob("Observed annual counterfactual carbon loss (%)",
                                        rot = 90, gp = gpar(fontsize = 28)))
 plot_cf_all = title_y + plot_cf_panel +
   plot_layout(width = c(0.02, 1))
-ggsave(paste0(fig_path, "figure6_closs_cf_observed_vs_forecasted.png"), width = 60, height = 30, unit = "cm")
+ggsave(paste0(fig_path, "figure_6_closs_cf_observed_vs_forecasted.png"), width = 60, height = 30, unit = "cm")
 
 
 #Plot Figure 7. ----
@@ -320,24 +352,18 @@ plot_p_naive_10 = PlotModel(yr = 10, type = "p", model = "naive")
 plot_p_sel_5 = PlotModel(yr = 5, type = "p", model = "sel")
 plot_p_sel_10 = PlotModel(yr = 10, type = "p", model = "sel")
 
-plot_p_full = plot_p_full_5$plot + plot_p_full_10$plot +
-  plot_layout(axes = "collect", axis_titles = "collect")
-plot_p_full_title = wrap_elements(grid::textGrob("A. Full model", gp = gpar(fontsize = 36, fontface = "bold")))
-plot_p_naive = plot_p_naive_5$plot + plot_p_naive_10$plot +
-  plot_layout(axes = "collect", axis_titles = "collect")
-plot_p_naive_title = wrap_elements(grid::textGrob("B. Naive model", gp = gpar(fontsize = 36, fontface = "bold")))
 plot_p_sel = plot_p_sel_5$plot + plot_p_sel_10$plot +
   plot_layout(axes = "collect", axis_titles = "collect")
-plot_p_sel_title = wrap_elements(grid::textGrob("C. Selected model", gp = gpar(fontsize = 36, fontface = "bold")))
-
-plot_p_stack = plot_p_full_title / plot_p_full / plot_p_naive_title / plot_p_naive / plot_p_sel_title / plot_p_sel +
-  plot_layout(height = c(0.15, 1, 0.15, 1, 0.15, 1))
-title_y = wrap_elements(grid::textGrob(paste("Observed annual project carbon loss (%)"),
+title_y = wrap_elements(grid::textGrob("Observed annual project carbon loss (%)",
                                        rot = 90, gp = gpar(fontsize = 28)))
-plot_p_all = title_y + plot_p_stack +
+plot_p_all = title_y + plot_p_sel +
   plot_layout(width = c(0.02, 1))
-plot_p_all
-ggsave(paste0(fig_path, "figure7_closs_p_observed_vs_forecasted.png"), width = 60, height = 60, unit = "cm")
+ggsave(paste0(fig_path, "figure_7_closs_p_observed_vs_forecasted.png"), width = 60, height = 30, unit = "cm")
+
+summary(plot_p_sel_5$model)
+eta_squared(plot_p_sel_5$model, partial = T)
+summary(plot_p_sel_10$model)
+eta_squared(plot_p_sel_10$model, partial = T)
 
 
 #Plot Figure 8. ----
@@ -349,6 +375,63 @@ plot_add_naive_10 = PlotModel(yr = 10, type = "add", model = "naive")
 plot_add_sel_5 = PlotModel(yr = 5, type = "add", model = "sel")
 plot_add_sel_10 = PlotModel(yr = 10, type = "add", model = "sel")
 
+plot_add_sel = plot_add_sel_5$plot + plot_add_sel_10$plot +
+  plot_layout(axes = "collect", axis_titles = "collect")
+title_y = wrap_elements(grid::textGrob(expression(atop("Observed annual carbon credit production",
+                                                       "(MgC " ~ ha^-1 ~ yr^-1 ~ ")")),
+                                       rot = 90, gp = gpar(fontsize = 28)))
+plot_add_all = title_y + plot_add_sel +
+  plot_layout(width = c(0.04, 1))
+plot_add_all
+ggsave(paste0(fig_path, "figure_8_additionality_observed_vs_forecasted.png"), width = 60, height = 30, unit = "cm")
+
+summary(plot_add_sel_5$model)
+eta_squared(plot_add_sel_5$model, partial = T)
+summary(plot_add_sel_10$model)
+eta_squared(plot_add_sel_10$model, partial = T)
+
+
+#Plot Figure 9. ----
+#Linear model predicting observed carbon credit production rate (difference in carbon loss rate) for 5-year and 10-year intervals
+plot_add_rate_full_5 = PlotModel(yr = 5, type = "add_rate", model = "full")
+plot_add_rate_full_10 = PlotModel(yr = 10, type = "add_rate", model = "full")
+plot_add_rate_naive_5 = PlotModel(yr = 5, type = "add_rate", model = "naive")
+plot_add_rate_naive_10 = PlotModel(yr = 10, type = "add_rate", model = "naive")
+plot_add_rate_sel_5 = PlotModel(yr = 5, type = "add_rate", model = "sel")
+plot_add_rate_sel_10 = PlotModel(yr = 10, type = "add_rate", model = "sel")
+
+plot_add_rate_sel = plot_add_rate_sel_5$plot + plot_add_rate_sel_10$plot +
+  plot_layout(axes = "collect", axis_titles = "collect")
+title_y = wrap_elements(grid::textGrob("Observed difference in carbon loss rate (%)",
+                                       rot = 90, gp = gpar(fontsize = 28)))
+plot_add_rate_all = title_y + plot_add_rate_sel +
+  plot_layout(width = c(0.02, 1))
+plot_add_rate_all
+ggsave(paste0(fig_path, "figure_9_add_rate_observed_vs_forecasted.png"), width = 60, height = 30, unit = "cm")
+
+
+#Plot Figure S3. ----
+#Linear model predicting observed project carbon loss for 5-year and 10-year intervals
+plot_p_full = plot_p_full_5$plot + plot_p_full_10$plot +
+  plot_layout(axes = "collect", axis_titles = "collect")
+plot_p_full_title = wrap_elements(grid::textGrob("A. Full model", gp = gpar(fontsize = 36, fontface = "bold")))
+plot_p_naive = plot_p_naive_5$plot + plot_p_naive_10$plot +
+  plot_layout(axes = "collect", axis_titles = "collect")
+plot_p_naive_title = wrap_elements(grid::textGrob("B. Naive model", gp = gpar(fontsize = 36, fontface = "bold")))
+plot_p_sel_title = wrap_elements(grid::textGrob("C. Selected model", gp = gpar(fontsize = 36, fontface = "bold")))
+
+plot_p_stack = plot_p_full_title / plot_p_full / plot_p_naive_title / plot_p_naive / plot_p_sel_title / plot_p_sel +
+  plot_layout(height = c(0.15, 1, 0.15, 1, 0.15, 1))
+title_y = wrap_elements(grid::textGrob("Observed annual project carbon loss (%)",
+                                       rot = 90, gp = gpar(fontsize = 28)))
+plot_p_ext = title_y + plot_p_stack +
+  plot_layout(width = c(0.02, 1))
+plot_p_ext
+ggsave(paste0(fig_path, "figure_s3_closs_p_observed_vs_forecasted.png"), width = 60, height = 60, unit = "cm")
+
+
+#Plot Figure S4. ----
+#Linear model predicting observed carbon credit production for 5-year and 10-year intervals
 plot_add_full = plot_add_full_5$plot + plot_add_full_10$plot +
   plot_layout(axes = "collect", axis_titles = "collect")
 plot_add_full_title = wrap_elements(grid::textGrob("A. Full model", gp = gpar(fontsize = 36, fontface = "bold")))
@@ -361,9 +444,32 @@ plot_add_sel_title = wrap_elements(grid::textGrob("C. Selected model", gp = gpar
 
 plot_add_stack = plot_add_full_title / plot_add_full / plot_add_naive_title / plot_add_naive / plot_add_sel_title / plot_add_sel +
   plot_layout(height = c(0.15, 1, 0.15, 1, 0.15, 1))
-title_y = wrap_elements(grid::textGrob(bquote(paste("Observed annual carbon credit production (MgC ", ha^-1, " ", yr^-1, ")")),
+title_y = wrap_elements(grid::textGrob(expression(atop("Observed annual carbon credit production",
+                                                       "(MgC " ~ ha^-1 ~ yr^-1 ~ ")")),
                                        rot = 90, gp = gpar(fontsize = 28)))
-plot_add_all = title_y + plot_add_stack +
+plot_add_ext = title_y + plot_add_stack +
+  plot_layout(width = c(0.04, 1))
+plot_add_ext
+ggsave(paste0(fig_path, "figure_s4_additionality_observed_vs_forecasted.png"), width = 60, height = 60, unit = "cm")
+
+
+#Plot Figure S5. ----
+#Linear model predicting observed carbon credit production rate (difference in carbon loss rate) for 5-year and 10-year intervals
+plot_add_rate_full = plot_add_rate_full_5$plot + plot_add_rate_full_10$plot +
+  plot_layout(axes = "collect", axis_titles = "collect")
+plot_add_rate_full_title = wrap_elements(grid::textGrob("A. Full model", gp = gpar(fontsize = 36, fontface = "bold")))
+plot_add_rate_naive = plot_add_rate_naive_5$plot + plot_add_rate_naive_10$plot +
+  plot_layout(axes = "collect", axis_titles = "collect")
+plot_add_rate_naive_title = wrap_elements(grid::textGrob("B. Naive model", gp = gpar(fontsize = 36, fontface = "bold")))
+plot_add_rate_sel = plot_add_rate_sel_5$plot + plot_add_rate_sel_10$plot +
+  plot_layout(axes = "collect", axis_titles = "collect")
+plot_add_rate_sel_title = wrap_elements(grid::textGrob("C. Selected model", gp = gpar(fontsize = 36, fontface = "bold")))
+
+plot_add_rate_stack = plot_add_rate_full_title / plot_add_rate_full / plot_add_rate_naive_title / plot_add_rate_naive / plot_add_rate_sel_title / plot_add_rate_sel +
+  plot_layout(height = c(0.15, 1, 0.15, 1, 0.15, 1))
+title_y = wrap_elements(grid::textGrob("Observed difference in carbon loss rate (%)",
+                                       rot = 90, gp = gpar(fontsize = 28)))
+plot_add_rate_all = title_y + plot_add_rate_stack +
   plot_layout(width = c(0.02, 1))
-plot_add_all
-ggsave(paste0(fig_path, "figure8_additionality_observed_vs_forecasted.png"), width = 60, height = 60, unit = "cm")
+plot_add_rate_all
+ggsave(paste0(fig_path, "figure_s5_add_rate_observed_vs_forecasted.png"), width = 60, height = 60, unit = "cm")

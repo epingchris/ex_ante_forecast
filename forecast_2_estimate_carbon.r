@@ -74,20 +74,20 @@ if(param_p[1] == "all") {
   project_sel = project_var
 } else {
   project_sel = project_var %>%
-    filter(ID %in% param_p)
+    filter(project %in% param_p)
 }
 
 
 #Read project variables
-projects = project_sel$ID
+projects = project_sel$project
 t0_vec = project_sel$t0
 area_ha_vec = project_sel$area_ha
 cdens_list = project_sel %>%
-  dplyr::select(ID, cdens_1:se_6) %>%
+  dplyr::select(project, cdens_1:se_6) %>%
   pivot_longer(cols = c(starts_with("cdens_"), starts_with("n_"), starts_with("se_")),
               names_to = c(".value", "luc"),
               names_sep = "_") %>%
-  split(f = .$ID)
+  split(f = .$project)
 
 
 #retrieve carbon time series for project pixel subsamples and matched pixels

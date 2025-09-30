@@ -9,37 +9,48 @@ PlotModel = function(yr, type, model = "naive") {
   if(type == "cf") {
     model_df_selected = model_df_scaled %>%
       dplyr::select(!ends_with(as.character(yr_excl)) & starts_with(c("forecast", "closs_obs_cf"))) %>%
-      rename(forecast = colnames(.)[1], observed = colnames(.)[2]) %>%
+      rename_with(~ gsub("_[0-9]+$", "", .x)) %>%
+      rename(observed = closs_obs_cf) %>%
       mutate(forecast = forecast * 100, observed = observed * 100) #turn into percentage
-    fignum = "6"
     x_lab = paste("Predicted annual counterfactual carbon loss (%)")
     model = "naive"
-    max_val = 7.5
-    break_val = seq(0, 7.5, 1.5)
-    text_x = 5
-    text_y = c(3, 2, 1)
+    max_val = 6
+    break_val = 0:6
+    text_x = 4.5
+    text_y = c(2, 1.5, 1)
   } else if(type == "p") {
     model_df_selected = model_df_scaled %>%
-      dplyr::select(!ends_with(as.character(yr_excl)) & !starts_with(c("project", "closs_obs_cf", "add_obs"))) %>%
-      rename(forecast = colnames(.)[1], observed = colnames(.)[2]) %>%
+      dplyr::select(!ends_with(as.character(yr_excl)) & !starts_with(c("project", "closs_obs_cf", "add_rate", "add_obs"))) %>%
+      rename_with(~ gsub("_[0-9]+$", "", .x)) %>%
+      rename(observed = closs_obs_p) %>%
       mutate(forecast = forecast * 100, observed = observed * 100) #turn into percentage
-    fignum = "7"
     x_lab = paste("Predicted annual project carbon loss (%)")
-    max_val = 7.5
-    break_val = seq(0, 7.5, 1.5)
-    text_x = 5
-    text_y = c(3, 2, 1)
+    max_val = 6
+    break_val = 0:6
+    text_x = 4.5
+    text_y = c(2, 1.5, 1)
   } else if(type == "add") {
     model_df_selected = model_df_scaled %>%
-      dplyr::select(!ends_with(as.character(yr_excl)) & !starts_with(c("project", "closs_obs"))) %>%
-      rename(forecast = colnames(.)[1], observed = colnames(.)[2]) %>%
+      dplyr::select(!ends_with(as.character(yr_excl)) & !starts_with(c("project", "closs_obs", "add_rate"))) %>%
+      rename_with(~ gsub("_[0-9]+$", "", .x)) %>%
+      rename(observed = add_obs) %>%
       mutate(forecast = forecast * 100) #turn into percentage only for carbon loss forecast
-    fignum = "8"
     x_lab = bquote(paste("Predicted annual carbon credit production (MgC ", ha^-1, " ", yr^-1, ")"))
     max_val = 1.75
     break_val = seq(0, 1.75, 0.25)
     text_x = 1.25
-    text_y = c(0.75, 0.5, 0.25)
+    text_y = c(0.5, 0.375, 0.25)
+  } else if(type == "add_rate") {
+    model_df_selected = model_df_scaled %>%
+      dplyr::select(!ends_with(as.character(yr_excl)) & !starts_with(c("project", "closs_obs_", "add_obs"))) %>%
+      rename_with(~ gsub("_[0-9]+$", "", .x)) %>%
+      rename(observed = add_rate) %>%
+      mutate(forecast = forecast * 100, observed = observed * 100) #turn into percentage
+    x_lab = bquote(paste("Predicted difference in carbon loss rate (%)"))
+    max_val = 6
+    break_val = 0:6
+    text_x = 4.5
+    text_y = c(2, 1.5, 1)
   }
 
   #run linear model
@@ -56,7 +67,7 @@ PlotModel = function(yr, type, model = "naive") {
 
   #print diagnostic plots
   par(mfrow = c(2, 2))
-  png(paste0(fig_path, "figure", fignum, "_diagnostic_", yr, "_", type, ".png"), width = 600, height = 600)
+  png(paste0(fig_path, "figure_diagnostic_", yr, "_", type, "_", model, ".png"), width = 600, height = 600)
   plot(forecast_lm)
   dev.off()
 
@@ -72,11 +83,11 @@ PlotModel = function(yr, type, model = "naive") {
     geom_point(aes(x = pred, y = observed), size = 3) +
     geom_abline(intercept = 0, slope = 1, linetype = "dashed") +
     annotate(geom = "text", x = text_x, y = text_y[1], size = 10,
-             label = bquote(paste(R^2, " = ", .(round(R2, 3))))) +
-    annotate(geom = "text", x = text_x, y = text_y[2], size = 10,
              label = bquote(paste("MAPE: ", .(round(mape, 3)), "%"))) +
-    annotate(geom = "text", x = text_x, y = text_y[3], size = 10,
+    annotate(geom = "text", x = text_x, y = text_y[2], size = 10,
              label = bquote(paste("MPB: ", .(round(mpb, 3)), "%"))) +
+    annotate(geom = "text", x = text_x, y = text_y[3], size = 10,
+             label = bquote(paste("Goodness-of-fit: ", .(round(R2, 3))))) +
     labs(title = figtitle,
          x = x_lab,
          y = "") +
