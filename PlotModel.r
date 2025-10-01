@@ -1,4 +1,4 @@
-PlotModel = function(yr, type, model = "naive") {
+PlotModel = function(yr, type, model) {
   #select data to use
   yr_excl = switch(as.character(yr),
     "5" = "10",
@@ -12,7 +12,7 @@ PlotModel = function(yr, type, model = "naive") {
       rename_with(~ gsub("_[0-9]+$", "", .x)) %>%
       rename(observed = closs_obs_cf) %>%
       mutate(forecast = forecast * 100, observed = observed * 100) #turn into percentage
-    x_lab = paste("Predicted annual counterfactual carbon loss (%)")
+    x_lab = "Predicted annual counterfactual carbon loss (%)"
     model = "naive"
     max_val = 6
     break_val = 0:6
@@ -23,8 +23,8 @@ PlotModel = function(yr, type, model = "naive") {
       dplyr::select(!ends_with(as.character(yr_excl)) & !starts_with(c("project", "closs_obs_cf", "add_rate", "add_obs"))) %>%
       rename_with(~ gsub("_[0-9]+$", "", .x)) %>%
       rename(observed = closs_obs_p) %>%
-      mutate(forecast = forecast * 100, observed = observed * 100) #turn into percentage
-    x_lab = paste("Predicted annual project carbon loss (%)")
+      mutate(forecast = scale(forecast), observed = observed * 100) #scale forecasts and turn observed into percentage
+    x_lab = "Predicted annual project carbon loss (%)"
     max_val = 6
     break_val = 0:6
     text_x = 4.5
@@ -34,7 +34,7 @@ PlotModel = function(yr, type, model = "naive") {
       dplyr::select(!ends_with(as.character(yr_excl)) & !starts_with(c("project", "closs_obs", "add_rate"))) %>%
       rename_with(~ gsub("_[0-9]+$", "", .x)) %>%
       rename(observed = add_obs) %>%
-      mutate(forecast = forecast * 100) #turn into percentage only for carbon loss forecast
+      mutate(forecast = scale(forecast)) #scale forecasts
     x_lab = bquote(paste("Predicted annual carbon credit production (MgC ", ha^-1, " ", yr^-1, ")"))
     max_val = 1.75
     break_val = seq(0, 1.75, 0.25)
@@ -46,7 +46,7 @@ PlotModel = function(yr, type, model = "naive") {
       rename_with(~ gsub("_[0-9]+$", "", .x)) %>%
       rename(observed = add_rate) %>%
       mutate(forecast = forecast * 100, observed = observed * 100) #turn into percentage
-    x_lab = bquote(paste("Predicted difference in carbon loss rate (%)"))
+    x_lab = "Predicted difference in carbon loss rate (%)"
     max_val = 6
     break_val = 0:6
     text_x = 4.5
@@ -54,26 +54,35 @@ PlotModel = function(yr, type, model = "naive") {
   }
 
   #run linear model
-  if(model == "full") {
-    forecast_lm = lm(observed ~ ., data = model_df_selected) #full model using best forecast and socio-environmental variables
-  } else if(model == "naive") {
-    forecast_lm = lm(observed ~ forecast, data = model_df_selected) #naive model using only best forecast
-  } else if(model == "sel") {
-    forecast_lm_full = lm(observed ~ ., data = model_df_selected) #full model predicting project counterfactual carbon loss
-    forecast_lm = stepAIC(forecast_lm_full,
-                          scope = list(upper = ~ ., lower = ~ forecast),
-                          direction = "backward", trace = 1) #backward selection
+  if(length(model) > 1) {
+    model_text = "custom"
+    formula = reformulate(model, response = "observed")
+    forecast_lm = lm(formula, data = model_df_selected) #full model using best forecast and socio-environmental variables
+  } else {
+    model_text = model
+    if(model == "full") {
+      forecast_lm = lm(observed ~ ., data = model_df_selected) #full model using best forecast and socio-environmental variables
+    } else if(model == "naive") {
+      forecast_lm = lm(observed ~ forecast, data = model_df_selected) #naive model using only best forecast
+    } else if(model == "sel") {
+      forecast_lm_full = lm(observed ~ ., data = model_df_selected) #full model predicting project counterfactual carbon loss
+      forecast_lm = stepAIC(forecast_lm_full,
+                            scope = list(upper = ~ ., lower = ~ forecast),
+                            direction = "backward", trace = 1) #backward selection
+    }
   }
 
   #print diagnostic plots
-  par(mfrow = c(2, 2))
-  png(paste0(fig_path, "figure_diagnostic_", yr, "_", type, "_", model, ".png"), width = 600, height = 600)
-  plot(forecast_lm)
-  dev.off()
+  if(!is.null(forecast_lm)) {
+    par(mfrow = c(2, 2))
+    png(paste0(fig_path, "figure_diagnostic_", yr, "_", type, "_", model_text, ".png"), width = 600, height = 600)
+    plot(forecast_lm)
+    dev.off()
+  }
 
   #Calculate predictions and predictive performance
   pred_df = data.frame(pred = predict(forecast_lm),
-                       observed = forecast_lm$model$observed)
+                         observed = forecast_lm$model$observed)
   R2 = GOF(pred_df$pred, pred_df$observed) #goodness-of-fit (R2 over 1:1 line)
   mape = MAPE(pred_df$pred, pred_df$observed) #mean absolute percentage error (MAPE)
   mpb = MPB(pred_df$pred, pred_df$observed) #mean percentage bias (MPB)
@@ -83,9 +92,9 @@ PlotModel = function(yr, type, model = "naive") {
     geom_point(aes(x = pred, y = observed), size = 3) +
     geom_abline(intercept = 0, slope = 1, linetype = "dashed") +
     annotate(geom = "text", x = text_x, y = text_y[1], size = 10,
-             label = bquote(paste("MAPE: ", .(round(mape, 3)), "%"))) +
+             label = bquote(paste("MAPE: ", .(round(mape)), "%"))) +
     annotate(geom = "text", x = text_x, y = text_y[2], size = 10,
-             label = bquote(paste("MPB: ", .(round(mpb, 3)), "%"))) +
+             label = bquote(paste("MPB: ", .(round(mpb)), "%"))) +
     annotate(geom = "text", x = text_x, y = text_y[3], size = 10,
              label = bquote(paste("Goodness-of-fit: ", .(round(R2, 3))))) +
     labs(title = figtitle,
