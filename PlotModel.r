@@ -29,24 +29,13 @@ PlotModel = function(yr, type, model) {
     break_val = 0:6
     text_x = 4.5
     text_y = c(2, 1.5, 1)
-  } else if(type == "add") {
-    model_df_selected = model_df_scaled %>%
-      dplyr::select(!ends_with(as.character(yr_excl)) & !starts_with(c("project", "closs_obs", "add_rate"))) %>%
-      rename_with(~ gsub("_[0-9]+$", "", .x)) %>%
-      rename(observed = add_obs) %>%
-      mutate(forecast = scale(forecast)) #scale forecasts
-    x_lab = bquote(paste("Predicted annual carbon credit production (MgC ", ha^-1, " ", yr^-1, ")"))
-    max_val = 1.75
-    break_val = seq(0, 1.75, 0.25)
-    text_x = 1.25
-    text_y = c(0.5, 0.375, 0.25)
   } else if(type == "add_rate") {
     model_df_selected = model_df_scaled %>%
       dplyr::select(!ends_with(as.character(yr_excl)) & !starts_with(c("project", "closs_obs_", "add_obs"))) %>%
       rename_with(~ gsub("_[0-9]+$", "", .x)) %>%
       rename(observed = add_rate) %>%
       mutate(forecast = forecast * 100, observed = observed * 100) #turn into percentage
-    x_lab = "Predicted difference in carbon loss rate (%)"
+    x_lab = "Predicted emissions reductions (%)"
     max_val = 6
     break_val = 0:6
     text_x = 4.5
@@ -82,7 +71,7 @@ PlotModel = function(yr, type, model) {
 
   #Calculate predictions and predictive performance
   pred_df = data.frame(pred = predict(forecast_lm),
-                         observed = forecast_lm$model$observed)
+                       observed = forecast_lm$model$observed)
   R2 = GOF(pred_df$pred, pred_df$observed) #goodness-of-fit (R2 over 1:1 line)
   mape = MAPE(pred_df$pred, pred_df$observed) #mean absolute percentage error (MAPE)
   mpb = MPB(pred_df$pred, pred_df$observed) #mean percentage bias (MPB)
@@ -92,9 +81,9 @@ PlotModel = function(yr, type, model) {
     geom_point(aes(x = pred, y = observed), size = 3) +
     geom_abline(intercept = 0, slope = 1, linetype = "dashed") +
     annotate(geom = "text", x = text_x, y = text_y[1], size = 10,
-             label = bquote(paste("MAPE: ", .(round(mape)), "%"))) +
+             label = bquote(paste("Error: ", .(round(mape)), "%"))) +
     annotate(geom = "text", x = text_x, y = text_y[2], size = 10,
-             label = bquote(paste("MPB: ", .(round(mpb)), "%"))) +
+             label = bquote(paste("Bias: ", .(round(mpb)), "%"))) +
     annotate(geom = "text", x = text_x, y = text_y[3], size = 10,
              label = bquote(paste("Goodness-of-fit: ", .(round(R2, 3))))) +
     labs(title = figtitle,

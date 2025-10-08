@@ -18,7 +18,6 @@ library(corrplot) #corrplot::corrplot
 library(MASS) #MASS::stepAIC
 library(effectsize) #effectsize::eta_squared
 library(patchwork)
-library(gridExtra)
 library(grid) #grid::textGrob, grid::gpar
 library(httpgd)
 
@@ -179,33 +178,44 @@ forecast_all = read.csv(paste0(out_path, "_forecast.csv"), header = T)
 #Plot Figure 5. Overall forecasting performances for each type of forecasts across all target periods ----
 
 #summarise forecasting performance for observed counterfactual carbon loss
-forecast_summ_closs_cf = forecast_all %>%
+FitPerformance = function(x, y) {
+  dat = data.frame(forecast = x, observed = y)
+  mod = lm(observed ~ forecast, data = dat)
+  pred_df = data.frame(pred = predict(mod),
+                       obs = mod$model$observed)
+  GOF = GOF(pred_df$pred, pred_df$obs) #goodness-of-fit (R2 over 1:1 line)
+  mape = MAPE(pred_df$pred, pred_df$obs) #mean absolute percentage error (MAPE)
+  mpb = MPB(pred_df$pred, pred_df$obs) #mean percentage bias (MPB)
+  return(list(GOF = GOF, MAPE = mape, MPB = mpb))
+}
+
+forecast_summ = forecast_all %>%
   group_by(period_hist_prj, period_hist_reg, period_target, type) %>%
-  summarise(r2 = cor(forecast, closs_obs_cf, use = "complete.obs") ^ 2,
-            mape = MAPE(forecast, closs_obs_cf),
-            mpb = MPB(forecast, closs_obs_cf)) %>%
+  summarise(gof = FitPerformance(forecast, closs_obs_cf)$GOF,
+            mape = FitPerformance(forecast, closs_obs_cf)$MAPE,
+            mpb = FitPerformance(forecast, closs_obs_cf)$MPB) %>%
   ungroup()
 
-write.csv(forecast_summ_closs_cf, paste0(out_path, "_forecast_summary_closs_cf.csv"), row.names = F)
-forecast_summ_closs_cf = read.csv(paste0(out_path, "_forecast_summary_closs_cf.csv"), header = T)
+write.csv(forecast_summ, paste0(out_path, "_forecast_summary.csv"), row.names = F)
+forecast_summ = read.csv(paste0(out_path, "_forecast_summary.csv"), header = T)
 
 
 figure5_list = vector("list", 0)
-for(var in c("r2", "mape", "mpb")) {
+for(var in c("gof", "mape", "mpb")) {
   figtitle = switch(var,
-                    "r2" = expression("A. Squared correlation coefficient"),
+                    "gof" = expression(paste("A. Goodness-of-fit (", R^2, "over 1:1 line)")),
                     "mape" = expression("B. Mean absolute percentage error (MAPE)"),
                     "mpb" = expression("C. Mean percentage bias (MPB)"))
   y_scale = switch(var,
-             "r2" = seq(0, 0.75, 0.25),
-             "mape" = seq(0, 350, 50),
-             "mpb" = seq(-100, 300, 100))
+             "gof" = seq(0, 0.75, 0.25),
+             "mape" = seq(0, 600, 100),
+             "mpb" = seq(0, 600, 100))
   y_label = switch(var,
-             "r2" = expression(r^2),
-             "mape" = expression(`MAPE (%)`),
-             "mpb" = expression(`MPB (%)`))
+             "gof" = "Goodness-of-fit",
+             "mape" = "Error (%)",
+             "mpb" = "Bias (%)")
 
-  forecast_summ_plot = forecast_summ_closs_cf %>%
+  forecast_summ_plot = forecast_summ %>%
     dplyr::select(any_of(c("type", var, "period_target"))) %>%
     group_by(type, period_target) %>%
     summarise(mean = mean(.data[[var]], na.rm = T),
@@ -244,7 +254,7 @@ for(var in c("r2", "mape", "mpb")) {
 figure5_full = figure5_list[[1]] / figure5_list[[2]] / figure5_list[[3]] +
   plot_layout(guide = "collect", axes = "collect", axis_titles = "collect") &
   theme(legend.position = "bottom")
-ggsave(paste0(fig_path, "figure_5_overall_predictive_performance.png"), width = 40, height = 60, unit = "cm")
+ggsave(paste0(fig_path, "figure_5_overall_forecast_performance.png"), width = 40, height = 60, unit = "cm")
 
 
 #Plot Figure S3. Overall forecasting performances for project/region-based forecasts across historical periods --------
@@ -256,38 +266,32 @@ ggsave(paste0(fig_path, "figure_5_overall_predictive_performance.png"), width = 
 
 
 #Determine the best forecasts using overall rankings of r2, MAPE and MPB for 5-year and 10-year forecasts
-forecast_summ_closs_cf_5 = forecast_summ_closs_cf %>%
+forecast_summ_rank_5 = forecast_summ %>%
   filter(period_target == 5) %>%
-  mutate(r2_rank = rank(-r2, na.last = NA), mape_rank = rank(mape, na.last = NA), mpb_rank = rank(abs(mpb), na.last = NA)) %>%
-  mutate(sum_rank = r2_rank + mape_rank + mpb_rank)
-forecast_summ_closs_cf_10 = forecast_summ_closs_cf %>%
+  mutate(gof_rank = rank(-gof, na.last = NA), mape_rank = rank(mape, na.last = NA), mpb_rank = rank(abs(mpb), na.last = NA)) %>%
+  mutate(sum_rank = gof_rank + mape_rank + mpb_rank)
+forecast_summ_rank_10 = forecast_summ %>%
   filter(period_target == 10) %>%
-  mutate(r2_rank = rank(-r2, na.last = NA), mape_rank = rank(mape, na.last = NA), mpb_rank = rank(abs(mpb), na.last = NA)) %>%
-  mutate(sum_rank = r2_rank + mape_rank + mpb_rank)
-forecast_summ_closs_cf_rank = bind_rows(forecast_summ_closs_cf_5, forecast_summ_closs_cf_10) %>%
+  mutate(gof_rank = rank(-gof, na.last = NA), mape_rank = rank(mape, na.last = NA), mpb_rank = rank(abs(mpb), na.last = NA)) %>%
+  mutate(sum_rank = gof_rank + mape_rank + mpb_rank)
+forecast_summ_rank = bind_rows(forecast_summ_rank_5, forecast_summ_rank_10) %>%
   pivot_wider(names_from = period_target,
-              values_from = c(r2, mape, mpb, r2_rank, mape_rank, mpb_rank, sum_rank),
+              values_from = c(gof, mape, mpb, gof_rank, mape_rank, mpb_rank, sum_rank),
               names_sep = "_") %>%
   mutate(sum_rank_tot = sum_rank_5 + sum_rank_10)
-best_5 = forecast_summ_closs_cf_rank %>%
+best_5 = forecast_summ_rank %>%
   filter(sum_rank_5 <= quantile(sum_rank_5, 0.1, na.rm = T)) %>%
-  dplyr::select(type, period_hist_prj, period_hist_reg, r2_5, mape_5, mpb_5, sum_rank_5) %>%
-  arrange(sum_rank_5) %>%
-  mutate(across(c(r2_5, mape_5, mpb_5), ~ round(., 2)))
-best_10 = forecast_summ_closs_cf_rank %>%
+  dplyr::select(type, period_hist_prj, period_hist_reg, gof_5, mape_5, mpb_5, sum_rank_5) %>%
+  arrange(sum_rank_5)
+best_10 = forecast_summ_rank %>%
   filter(sum_rank_10 <= quantile(sum_rank_10, 0.1, na.rm = T)) %>%
-  dplyr::select(type, period_hist_prj, period_hist_reg, r2_10, mape_10, mpb_10, sum_rank_10) %>%
-  arrange(sum_rank_10) %>%
-  mutate(across(c(r2_10, mape_10, mpb_10), ~ round(., 2)))
-best_tot = forecast_summ_closs_cf_rank %>%
-  filter(sum_rank_tot <= quantile(sum_rank_tot, 0.1, na.rm = T)) %>%
-  dplyr::select(type, period_hist_prj, period_hist_reg, r2_5, mape_5, mpb_5, sum_rank_5, r2_10, mape_10, mpb_10, sum_rank_10, sum_rank_tot) %>%
-  arrange(sum_rank_tot) %>%
-  mutate(across(c(r2_5, mape_5, mpb_5, r2_10, mape_10, mpb_10), ~ round(., 2)))
-#best forecast: mixed with project_used = -10 and region_used = -7
+  dplyr::select(type, period_hist_prj, period_hist_reg, gof_10, mape_10, mpb_10, sum_rank_10) %>%
+  arrange(sum_rank_10)
+#best forecast for 5-year target period: mixed with project_used = -8 and region_used = -2
+#best forecast for 10-year target period: project with project_used = -7
 
-write.csv(best_5, paste0(fig_path, "table_1_best_5.csv"), row.names = F)
-write.csv(best_10, paste0(fig_path, "table_1_best_10.csv"), row.names = F)
+write.csv(best_5, paste0(fig_path, "table_s3a_best_5.csv"), row.names = F)
+write.csv(best_10, paste0(fig_path, "table_s3b_best_10.csv"), row.names = F)
 
 
 #Compile data for model prediction ----
@@ -300,8 +304,20 @@ corrplot(envir_var_cor, type = "lower", order = "hclust", addCoef.col = "black",
 
 envir_var = project_var %>%
   dplyr::select(!c(country, t0, prj_elev) & !starts_with(c("cdens", "n_", "se_", "reg_")))
-envir_var_cor = cor(envir_var %>% dplyr::select(!project))
+
+envir_var_plot = project_var %>%
+  dplyr::select(!c(project, country, t0) & !starts_with(c("cdens", "n_", "se_", "reg_"))) %>%
+  rename(Area = area_ha,
+         "Mean slope" = prj_slope,
+         "Mean elevation" = prj_elev,
+         "Mean remoteness" = prj_remote,
+         "Mean GDP per capita" = gdppc_mean,
+         "GDP per capita growth rate" = gdppc_rate,
+         "Corruption index" = wgicc_mean)
+envir_var_cor = cor(envir_var_plot)
+png(paste0(fig_path, "figure_s3_envir_var_corr.png"), width = 20, height = 20, unit = "cm", res = 300)
 corrplot(envir_var_cor, type = "lower", order = "hclust", addCoef.col = "black", diag = F)
+dev.off()
 
 #initial carbon stock
 c_init_var = lapply(seq_along(projects), function(i) {
@@ -315,13 +331,13 @@ c_init_var = lapply(seq_along(projects), function(i) {
 
 #best 5-year forecast
 forecast_obs_5_var = forecast_all %>%
-  filter(period_hist_prj == -7 & period_hist_reg == -7 & period_target == 5) %>%
+  filter(period_hist_prj == -8 & period_hist_reg == -2 & period_target == 5) %>%
   dplyr::select(!c(period_hist_prj, period_hist_reg, type)) %>%
   pivot_wider(names_from = period_target, values_from = c(forecast, closs_obs_cf, closs_obs_p, add_obs))
 
 #best 10-year forecast
 forecast_obs_10_var = forecast_all %>%
-  filter(period_hist_prj == -7 & is.na(period_hist_reg) & period_target == 10) %>% #best 10-year predictions
+  filter(period_hist_prj == -7 & is.na(period_hist_reg) & period_target == 10) %>%
   dplyr::select(!c(period_hist_prj, period_hist_reg, type)) %>%
   pivot_wider(names_from = period_target, values_from = c(forecast, closs_obs_cf, closs_obs_p, add_obs))
 
@@ -352,16 +368,16 @@ plot_cf_all = title_y + plot_cf_panel +
 ggsave(paste0(fig_path, "figure_6_closs_cf_observed_vs_forecasted.png"), width = 60, height = 30, unit = "cm")
 
 
-#Plot Figure 7.Predicting observed project carbon loss for 5-year and 10-year periods ----
+#Plot Figure 7. Predicting project carbon loss for 5-year and 10-year periods ----
 #backward model selection
 plot_p_sel_5 = PlotModel(yr = 5, type = "p", model = "sel")
 plot_p_sel_10 = PlotModel(yr = 10, type = "p", model = "sel")
 
 #rerun with all predictors that are significant for either 5-year or 10-year periods
-effect_complete = union(names(plot_p_sel_5$model$coefficients)[-1],
-                        names(plot_p_sel_10$model$coefficients)[-1])
-plot_p_comp_5 = PlotModel(yr = 5, type = "p", model = effect_complete)
-plot_p_comp_10 = PlotModel(yr = 10, type = "p", model = effect_complete)
+retained_var = union(names(plot_p_sel_5$model$coefficients)[-1],
+                     names(plot_p_sel_10$model$coefficients)[-1])
+plot_p_comp_5 = PlotModel(yr = 5, type = "p", model = retained_var)
+plot_p_comp_10 = PlotModel(yr = 10, type = "p", model = retained_var)
 
 #collate plots
 plot_p_comp = plot_p_comp_5$plot + plot_p_comp_10$plot +
@@ -387,19 +403,19 @@ anova(plot_p_comp_5$model, plot_p_naive_5$model)
 anova(plot_p_comp_10$model, plot_p_naive_10$model)
 
 
-#Plot Figure 8. Predicting observed additionality (difference in carbon loss rate) for 5-year and 10-year periods ----
+#Plot Figure 8. Predicting emissions reductions (difference in carbon loss rate) for 5-year and 10-year periods ----
 plot_add_rate_sel_5 = PlotModel(yr = 5, type = "add_rate", model = "sel")
 plot_add_rate_sel_10 = PlotModel(yr = 10, type = "add_rate", model = "sel")
 
 #rerun with all predictors that are significant for either 5-year or 10-year predictions
-effect_complete = union(names(plot_add_rate_sel_5$model$coefficients)[-1],
-                        names(plot_add_rate_sel_10$model$coefficients)[-1])
-plot_add_rate_comp_5 = PlotModel(yr = 5, type = "add_rate", model = effect_complete)
-plot_add_rate_comp_10 = PlotModel(yr = 10, type = "add_rate", model = effect_complete)
+retained_var = union(names(plot_add_rate_sel_5$model$coefficients)[-1],
+                     names(plot_add_rate_sel_10$model$coefficients)[-1])
+plot_add_rate_comp_5 = PlotModel(yr = 5, type = "add_rate", model = retained_var)
+plot_add_rate_comp_10 = PlotModel(yr = 10, type = "add_rate", model = retained_var)
 
 plot_add_rate_comp = plot_add_rate_comp_5$plot + plot_add_rate_comp_10$plot +
   plot_layout(axes = "collect", axis_titles = "collect")
-title_y = wrap_elements(grid::textGrob("Observed difference in carbon loss rate (%)",
+title_y = wrap_elements(grid::textGrob("Observed emissions reductions (%)",
                                        rot = 90, gp = gpar(fontsize = 28)))
 plot_add_rate_all = title_y + plot_add_rate_comp +
   plot_layout(width = c(0.02, 1))
