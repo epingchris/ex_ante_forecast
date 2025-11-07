@@ -12,7 +12,7 @@
 rm(list = ls())
 
 #Load packages
-library(tidyverse) #ggplot2, dplyr, and stringr used in plotPlacebo/plotBaseline.r: tibble to store labels with bquote()
+library(tidyverse)
 library(magrittr) #pipe operators
 library(corrplot) #corrplot::corrplot
 library(MASS) #MASS::stepAIC
@@ -27,6 +27,12 @@ hgd()
 #Set up wrapper functions for performance metrics
 GOF = function(forecast, observed) {
   return(1 - sum((observed - forecast) ^ 2, na.rm = T) / sum((observed - mean(observed, na.rm = T)) ^ 2, na.rm = T))
+}
+IOA = function(forecast, observed) {
+  num = sum((forecast - observed)^2, na.rm = T)
+  den = sum((abs(forecast - mean(observed, na.rm = T)) +
+             abs(observed - mean(observed, na.rm = T))) ^ 2, na.rm = T)
+  return(1 - num / den)
 }
 MAPE = function(forecast, observed) {
   return(mean(abs(forecast - observed) / abs(observed), na.rm = T) * 100)
@@ -108,6 +114,7 @@ observed_add = boot_add_rel %>%
 #Generate simple forecasts from project or regional rates using different historical periods
 forecast_prj_list = vector("list", 10 * length(projects))
 forecast_reg_list = vector("list", 10 * length(projects))
+forecast_mix_invar_list = vector("list", 10 * length(projects))
 for(i in 1:10) {
   yr_i = i - 11
   for(k in seq_along(projects)) {
@@ -127,12 +134,19 @@ for(i in 1:10) {
       pull(mean)
     forecast_reg_list[[ind]] = data.frame(period_hist_prj = NA, period_hist_reg = yr_i, period_target = 1:10,
                                           forecast = rate_region, project = project_k)
+
+    #time-invariant mixed forecasts
+    forecast_mix_invar_list[[ind]] = data.frame(period_hist_prj = yr_i, period_hist_reg = yr_i, period_target = 1:10,
+                                                forecast = sqrt(rate_project * rate_region), project = project_k)
+
   }
 }
 forecast_prj = list_rbind(forecast_prj_list) %>%
   mutate(type = "Project")
 forecast_reg = list_rbind(forecast_reg_list) %>%
   mutate(type = "Region")
+forecast_mix_invar = list_rbind(forecast_mix_invar_list) %>%
+  mutate(type = "Mixed invariant")
 
 
 #Generate mixed forecasts from project and regional rates using different historical periods
@@ -164,7 +178,7 @@ forecast_mix = list_rbind(forecast_mix_list) %>%
   mutate(type = "Mixed")
 
 # Merge with observed values
-forecast_all = bind_rows(forecast_prj, forecast_reg, forecast_mix) %>%
+forecast_all = bind_rows(forecast_prj, forecast_reg, forecast_mix_invar, forecast_mix) %>%
   left_join(closs_obs_cf, by = c("project", "period_target")) %>%
   left_join(closs_obs_p, by = c("project", "period_target")) %>%
   left_join(observed_add, by = c("project", "period_target")) %>%
@@ -189,11 +203,19 @@ FitPerformance = function(x, y) {
   return(list(GOF = GOF, MAPE = mape, MPB = mpb))
 }
 
+FitPerformance2 = function(x, y) {
+  dat = data.frame(pred = x, obs = y)
+  GOF = IOA(dat$pred, dat$obs) #goodness-of-fit (R2 over 1:1 line)
+  mape = MAPE(dat$pred, dat$obs) #mean absolute percentage error (MAPE)
+  mpb = MPB(dat$pred, dat$obs) #mean percentage bias (MPB)
+  return(list(GOF = GOF, MAPE = mape, MPB = mpb))
+}
+
 forecast_summ = forecast_all %>%
   group_by(period_hist_prj, period_hist_reg, period_target, type) %>%
-  summarise(gof = FitPerformance(forecast, closs_obs_cf)$GOF,
-            mape = FitPerformance(forecast, closs_obs_cf)$MAPE,
-            mpb = FitPerformance(forecast, closs_obs_cf)$MPB) %>%
+  summarise(gof = FitPerformance2(forecast, closs_obs_cf)$GOF,
+            mape = FitPerformance2(forecast, closs_obs_cf)$MAPE,
+            mpb = FitPerformance2(forecast, closs_obs_cf)$MPB) %>%
   ungroup()
 
 write.csv(forecast_summ, paste0(out_path, "_forecast_summary.csv"), row.names = F)
@@ -207,9 +229,9 @@ for(var in c("gof", "mape", "mpb")) {
                     "mape" = expression("B. Mean absolute percentage error (MAPE)"),
                     "mpb" = expression("C. Mean percentage bias (MPB)"))
   y_scale = switch(var,
-             "gof" = seq(0, 0.75, 0.25),
-             "mape" = seq(0, 600, 100),
-             "mpb" = seq(0, 600, 100))
+             "gof" = seq(0, 1, 0.25),
+             "mape" = seq(0, 400, 100),
+             "mpb" = seq(-100, 600, 100))
   y_label = switch(var,
              "gof" = "Goodness-of-fit",
              "mape" = "Error (%)",
@@ -219,18 +241,20 @@ for(var in c("gof", "mape", "mpb")) {
     dplyr::select(any_of(c("type", var, "period_target"))) %>%
     group_by(type, period_target) %>%
     summarise(mean = mean(.data[[var]], na.rm = T),
-              min = min(.data[[var]], na.rm = T),
-              max = max(.data[[var]], na.rm = T),
+              sd = mean(.data[[var]], na.rm = T),
               lower = quantile(.data[[var]], 0.025, na.rm = T),
               upper = quantile(.data[[var]], 0.975, na.rm = T)) %>%
     ungroup() %>%
-    mutate(type = factor(type, levels = c("Project", "Region", "Mixed")))
+    mutate(se = sd / sqrt(ifelse(type == "Mixed", 100, 10)),
+           se_l = mean - se,
+           se_u = mean + se) %>%
+    mutate(type = factor(type, levels = c("Project", "Region", "Mixed invariant", "Mixed")))
 
   figure5_list[[var]] = ggplot(data = forecast_summ_plot, aes(x = period_target, y = mean)) +
     geom_line(aes(color = type), linewidth = 2) +
-    geom_ribbon(aes(ymin = lower, ymax = upper, fill = type), alpha = 0.1) +
-    scale_color_manual(values = c("#40B0A6", "#CDAC60", "#9467BD")) +
-    scale_fill_manual(values = c("#40B0A6", "#CDAC60", "#9467BD")) +
+    geom_ribbon(aes(ymin = se_l, ymax = se_u, fill = type), alpha = 0.1) +
+    scale_color_manual(values = c("#40B0A6", "#CDAC60", "blue", "#9467BD")) +
+    scale_fill_manual(values = c("#40B0A6", "#CDAC60", "blue", "#9467BD")) +
     scale_x_continuous(breaks = 1:10, labels = 1:10) +
     scale_y_continuous(breaks = y_scale, labels = y_scale) +
     labs(title = figtitle, x = "Number of years afte project start", y = y_label,
@@ -254,7 +278,7 @@ for(var in c("gof", "mape", "mpb")) {
 figure5_full = figure5_list[[1]] / figure5_list[[2]] / figure5_list[[3]] +
   plot_layout(guide = "collect", axes = "collect", axis_titles = "collect") &
   theme(legend.position = "bottom")
-ggsave(paste0(fig_path, "figure_5_overall_forecast_performance.png"), width = 40, height = 60, unit = "cm")
+ggsave(paste0(fig_path, "figure_5_overall_forecast_performance_new2_withinvar.png"), width = 40, height = 60, unit = "cm")
 
 
 #Plot Figure S3. Overall forecasting performances for project/region-based forecasts across historical periods --------
@@ -293,31 +317,26 @@ best_10 = forecast_summ_rank %>%
 write.csv(best_5, paste0(fig_path, "table_s3a_best_5.csv"), row.names = F)
 write.csv(best_10, paste0(fig_path, "table_s3b_best_10.csv"), row.names = F)
 
+#Determine the best forecasts using overall rankings of r2, MAPE and MPB for all target periods
+forecast_summ_rank_list = vector("list", 10)
+for(i in 1:10) {
+  forecast_summ_rank_list[[i]] = forecast_summ %>%
+    filter(period_target == i) %>%
+    mutate(gof_rank = rank(-gof, na.last = NA), mape_rank = rank(mape, na.last = NA), mpb_rank = rank(abs(mpb), na.last = NA)) %>%
+    mutate(sum_rank = gof_rank + mape_rank + mpb_rank) %>%
+    dplyr::select(period_hist_prj, period_hist_reg, period_target, sum_rank)
+}
+forecast_summ_rank_all = bind_rows(forecast_summ_rank_list) %>%
+  group_by(period_hist_prj, period_hist_reg) %>%
+  summarise(sum_rank = sum(sum_rank, na.rm = T)) %>%
+  ungroup() %>%
+  arrange(sum_rank)
+
 
 #Compile data for model prediction ----
 envir_var = project_var %>%
-  dplyr::select(!c(country, t0) & !starts_with(c("cdens", "n_", "se_")))
-envir_var_cor = cor(envir_var %>% dplyr::select(!project))
-corrplot(envir_var_cor, type = "lower", order = "hclust", addCoef.col = "black", diag = F)
-#prj_ and reg_ environmental variables highly correlated: remove reg_
-#slope and elevation highly correlated: remove elevation
-
-envir_var = project_var %>%
-  dplyr::select(!c(country, t0, prj_elev) & !starts_with(c("cdens", "n_", "se_", "reg_")))
-
-envir_var_plot = project_var %>%
-  dplyr::select(!c(project, country, t0) & !starts_with(c("cdens", "n_", "se_", "reg_"))) %>%
-  rename(Area = area_ha,
-         "Mean slope" = prj_slope,
-         "Mean elevation" = prj_elev,
-         "Mean remoteness" = prj_remote,
-         "Mean GDP per capita" = gdppc_mean,
-         "GDP per capita growth rate" = gdppc_rate,
-         "Corruption index" = wgicc_mean)
-envir_var_cor = cor(envir_var_plot)
-png(paste0(fig_path, "figure_s3_envir_var_corr.png"), width = 20, height = 20, unit = "cm", res = 300)
-corrplot(envir_var_cor, type = "lower", order = "hclust", addCoef.col = "black", diag = F)
-dev.off()
+  dplyr::select(!c(country, t0) & !starts_with(c("cdens", "n_", "se_", "reg_")))
+#prj_ and reg_ environmental variables highly correlated
 
 #initial carbon stock
 c_init_var = lapply(seq_along(projects), function(i) {
@@ -350,6 +369,23 @@ model_df_scaled = model_df %>%
 write.csv(model_df_scaled, paste0(fig_path, "model_df_scaled.csv"), row.names = F)
 
 model_df_scaled = read.csv(paste0(fig_path, "model_df_scaled.csv"), header = T)
+
+corrplot(cor(model_df_scaled[, 2:8]), type = "lower", order = "hclust", addCoef.col = "black", diag = F)
+
+model_df_to_plot = model_df_scaled %>%
+  dplyr::select(!c(project, country, t0) & !starts_with(c("cdens", "n_", "se_", "reg_"))) %>%
+  rename(Area = area_ha,
+         "Mean slope" = prj_slope,
+         "Mean elevation" = prj_elev,
+         "Mean remoteness" = prj_remote,
+         "Mean GDP per capita" = gdppc_mean,
+         "GDP per capita growth rate" = gdppc_rate,
+         "Corruption index" = wgicc_mean,
+         "Initial carbon density" = c_init)
+envir_var_cor = cor(model_df_to_plot)
+png(paste0(fig_path, "figure_s3_envir_var_corr.png"), width = 20, height = 20, unit = "cm", res = 300)
+corrplot(envir_var_cor, type = "lower", order = "hclust", addCoef.col = "black", diag = F)
+dev.off()
 
 
 #Plot Figure 6. Forecasting observed counterfactual carbon loss for 5-year and 10-year periods ----

@@ -30,55 +30,33 @@ library(arrow) #read_parquet()
 source("FindFiles.r") #wrapper function to search files or folders based on inclusion/exclusion keywords
 
 #Define input variables
-analysis_type = "ongoing" #analysis type
-project_dir = "/maps/epr26/tmf_pipe_out/" #path to directories containing implementation outputs
+project_dir = "/maps/epr26/tmf_pipe_out/" #path to directories containing PACT matching outputs
 polygon_dir = "/maps/epr26/tmf-data/projects/" #path to polygons
 cdens_dir = "/maps/epr26/tmf_pipe_out/cdens_new/" #path to newly generated carbon density tables with SE
-
 out_path = paste0("/maps/epr26/ex_ante_forecast_out/out_", analysis_type) #path to store script output
 
-if(analysis_type == "ongoing") {
-  #load basic information (csv file copied from Tom's directory)
-  proj_info = read.csv("proj_meta.csv") %>%
-    dplyr::select(ID, COUNTRY, t0) %>%
-    rename(project = ID, country = COUNTRY)
+#load basic information (csv file copied from Tom's directory)
+proj_info = read.csv("proj_meta.csv") %>%
+  dplyr::select(ID, COUNTRY, t0) %>%
+  rename(project = ID, country = COUNTRY)
 
-  #standardise country names: Lao => Lao PDR, Congo, Dem Rep of the => Congo, Dem. Rep.
-  proj_info$country[proj_info$country == "Lao"] = "Lao PDR"
-  proj_info$country[proj_info$country == "Congo, Dem Rep of the"] = "Congo, Dem. Rep."
+#standardise country names: Lao => Lao PDR, Congo, Dem Rep of the => Congo, Dem. Rep.
+proj_info$country[proj_info$country == "Lao"] = "Lao PDR"
+proj_info$country[proj_info$country == "Congo, Dem Rep of the"] = "Congo, Dem. Rep."
 
-  #define include and exclude strings
-  include_strings = NULL
-  exclude_strings = c("archive", "slopes", "elevation", "srtm", "asn", "af", "sa", "\\.", "\\_")
+#define include and exclude strings
+include_strings = NULL
+exclude_strings = c("archive", "slopes", "elevation", "srtm", "asn", "af", "sa", "\\.", "\\_")
 
-} else if(analysis_type == "placebo") {
-  #load basic information
-  proj_info = read.csv("proj_meta_placebo.csv") %>%
-    dplyr::select(ID, COUNTRY, t0) %>%
-    rename(project = ID, country = COUNTRY)
-
-  #define include and exclude strings
-  include_strings = c("asn", "af", "sa")
-  exclude_strings = "\\."
-}
-
-#Find directories containing implementation outputs and save project names in vector "projects"
-projects = FindFiles(project_dir, include = include_strings, exclude = exclude_strings)
-
-#Sort by project ID
-if(analysis_type == "ongoing") {
-  projects = projects %>%
-    as.numeric() %>%
-    sort()
-} else {
-  projects = projects %>%
-    sort()
-}
+#Find names (project IDs) of directories containing implementation outputs
+projects_all = FindFiles(project_dir, include = include_strings, exclude = exclude_strings) %>%
+  as.numeric() %>%
+  sort() #sort project IDs in ascending order
 
 #Retrieve data frames containing carbon density (MgC/ha) per LUC
-cdens_list = vector("list", length(projects))
-for(i in seq_along(projects)) {
-  cdens_path = FindFiles(cdens_dir, paste0(projects[i], "_carbon_density"), full = T)
+cdens_list = vector("list", length(projects_all))
+for(i in seq_along(projects_all)) {
+  cdens_path = FindFiles(cdens_dir, paste0(projects_all[i], "_carbon_density"), full = T)
   if(!is.na(cdens_path)) {
     cdens = read.csv(cdens_path)
     colnames(cdens) = c("luc", "cdens", "n", "se")
@@ -87,20 +65,20 @@ for(i in seq_along(projects)) {
     }
     cdens = cdens %>%
       arrange(luc) %>% #order land class from 1 to 6
-      mutate(project = projects[i])
+      mutate(project = projects_all[i])
     cdens_list[[i]] = cdens
   }
 }
-names(cdens_list) = projects
+names(cdens_list) = projects_all
 
 #Check if carbon density values for LUC 1, 2, 3, and 4 are available
 is_carbon_complete = sapply(cdens_list, function(x) !is.na(sum(x[1:4, ]$cdens)))
 
 #Check if pairs parquet files are present (indicating complete output)
-is_done = sapply(projects, function(x) FindFiles(paste0(project_dir, x, "/pairs"), ".parquet") %>% length() == 200)
+is_done = sapply(projects_all, function(x) FindFiles(paste0(project_dir, x, "/pairs"), ".parquet") %>% length() == 200)
 
 #Select projects with complete output
-projects_status = data.frame(project = projects, carbon_complete = is_carbon_complete, done = is_done)
+projects_status = data.frame(project = projects_all, carbon_complete = is_carbon_complete, done = is_done)
 projects = subset(projects_status, carbon_complete & done)$project
 
 #Retrieve project variables
@@ -183,3 +161,11 @@ for(i in seq_along(project_var$project)) {
 #Output
 write.csv(projects_status, paste0(out_path, "_project_status.csv"), row.names = F) #project status check results
 write.csv(project_var, paste0(out_path, "_project_var.csv"), row.names = F) #project-level variables
+
+project_cdens_var = project_var %>%
+  dplyr::select(project, starts_with("cdens"), starts_with("n"), starts_with("se")) %>%
+  pivot_longer(cols = -project, names_to = c(".value", "luc"), names_sep = "_") %>%
+  mutate(val = paste0(round(cdens, 1), "±", round(se, 1), " (", n, ")")) %>%
+  pivot_wider(id_cols = project, names_from = luc, values_from = val) %>%
+  dplyr::select(-any_of(c("5", "6")))
+write.csv(project_cdens_var, paste0(out_path, "_table_s2.csv"), row.names = F)
