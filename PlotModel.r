@@ -1,4 +1,4 @@
-PlotModel = function(yr, type, model) {
+PlotModel = function(input, yr, type, model) {
   #select data to use
   yr_excl = switch(as.character(yr),
     "5" = "10",
@@ -7,37 +7,37 @@ PlotModel = function(yr, type, model) {
     "5" = "Five-year prediction",
     "10" = "Ten-year prediction")
   if(type == "cf") {
-    model_df_selected = model_df_scaled %>%
+    model_df_selected = input %>%
       dplyr::select(!ends_with(as.character(yr_excl)) & starts_with(c("forecast", "closs_obs_cf"))) %>%
       rename_with(~ gsub("_[0-9]+$", "", .x)) %>%
       rename(observed = closs_obs_cf) %>%
       mutate(forecast = forecast * 100, observed = observed * 100) #turn into percentage
     x_lab = "Predicted annual counterfactual carbon loss (%)"
     model = "naive"
-    max_val = 6
+    lim_val = c(0, 6)
     break_val = 0:6
     text_x = 4.5
     text_y = c(2, 1.5, 1)
   } else if(type == "p") {
-    model_df_selected = model_df_scaled %>%
+    model_df_selected = input %>%
       dplyr::select(!ends_with(as.character(yr_excl)) & !starts_with(c("project", "closs_obs_cf", "add_rate", "add_obs"))) %>%
       rename_with(~ gsub("_[0-9]+$", "", .x)) %>%
       rename(observed = closs_obs_p) %>%
       mutate(forecast = scale(forecast), observed = observed * 100) #scale forecasts and turn observed into percentage
     x_lab = "Predicted annual project carbon loss (%)"
-    max_val = 6
-    break_val = 0:6
+    lim_val = c(-1, 6)
+    break_val = seq(-1, 6)
     text_x = 4.5
     text_y = c(2, 1.5, 1)
   } else if(type == "add_rate") {
-    model_df_selected = model_df_scaled %>%
+    model_df_selected = input %>%
       dplyr::select(!ends_with(as.character(yr_excl)) & !starts_with(c("project", "closs_obs_", "add_obs"))) %>%
       rename_with(~ gsub("_[0-9]+$", "", .x)) %>%
       rename(observed = add_rate) %>%
       mutate(forecast = forecast * 100, observed = observed * 100) #turn into percentage
     x_lab = "Predicted emissions reductions (%)"
-    max_val = 6
-    break_val = 0:6
+    lim_val = c(-1, 6)
+    break_val = seq(-1, 6)
     text_x = 4.5
     text_y = c(2, 1.5, 1)
   }
@@ -61,36 +61,34 @@ PlotModel = function(yr, type, model) {
     }
   }
 
-  #print diagnostic plots
-  if(!is.null(forecast_lm)) {
-    par(mfrow = c(2, 2))
-    png(paste0(fig_path, "figure_diagnostic_", yr, "_", type, "_", model_text, ".png"), width = 600, height = 600)
-    plot(forecast_lm)
-    dev.off()
-  }
-
   #Calculate predictions and predictive performance
   pred_df = data.frame(pred = predict(forecast_lm),
                        observed = forecast_lm$model$observed)
   R2 = GOF(pred_df$pred, pred_df$observed) #goodness-of-fit (R2 over 1:1 line)
   mape = MAPE(pred_df$pred, pred_df$observed) #mean absolute percentage error (MAPE)
   mpb = MPB(pred_df$pred, pred_df$observed) #mean percentage bias (MPB)
+  mae = MAE(pred_df$pred, pred_df$observed) #mean absolute  error (MAE)
+  rmse = RMSE(pred_df$pred, pred_df$observed) #root mean squared error (RMSE)
 
   #Plot model (observed vs predicted project carbon loss)
   plot_model = ggplot(data = pred_df) +
     geom_point(aes(x = pred, y = observed), size = 3) +
     geom_abline(intercept = 0, slope = 1, linetype = "dashed") +
     annotate(geom = "text", x = text_x, y = text_y[1], size = 10,
-             label = bquote(paste("Error: ", .(round(mape)), "%"))) +
+             label = paste("MAE:", round(mae, 2))) +
     annotate(geom = "text", x = text_x, y = text_y[2], size = 10,
-             label = bquote(paste("Bias: ", .(round(mpb)), "%"))) +
+             label = paste("RMSE:", round(rmse, 2))) +
+    # annotate(geom = "text", x = text_x, y = text_y[1], size = 10,
+    #          label = paste("Error:", round(mape), "%")) +
+    # annotate(geom = "text", x = text_x, y = text_y[2], size = 10,
+    #          label = paste("Bias:", round(mpb), "%")) +
     annotate(geom = "text", x = text_x, y = text_y[3], size = 10,
-             label = bquote(paste("Goodness-of-fit: ", .(round(R2, 3))))) +
+             label = paste("Goodness-of-fit:", round(R2, 3))) +
     labs(title = figtitle,
          x = x_lab,
          y = "") +
-    scale_x_continuous(limits = c(0, max_val), breaks = break_val) +
-    scale_y_continuous(limits = c(0, max_val), breaks = break_val) +
+    scale_x_continuous(limits = lim_val, breaks = break_val) +
+    scale_y_continuous(limits = lim_val, breaks = break_val) +
     theme_bw() +
     theme(panel.grid = element_blank(),
           panel.spacing = unit(0, "cm"),
@@ -102,5 +100,5 @@ PlotModel = function(yr, type, model) {
           axis.ticks = element_blank(),
           axis.line = element_line(color = "black"))
   
-  return(list(model = forecast_lm, pred = pred_df, R2 = R2, mape = mape, mpb = mpb, plot = plot_model))
+  return(list(model = forecast_lm, pred = pred_df, R2 = R2, mae = mae, rmse = rmse, plot = plot_model))
 }
