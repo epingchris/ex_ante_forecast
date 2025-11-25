@@ -6,41 +6,55 @@ PlotModel = function(input, yr, type, model) {
   figtitle = switch(as.character(yr),
     "5" = "Five-year prediction",
     "10" = "Ten-year prediction")
+
+  lim_val = c(-1, 5)
+  break_val = seq(-1, 5)
+  text_x = -0.75
+  text_y = c(4, 4.5, 5)
+  text_size = 12
+  x_lab = "Predicted rate (%)"
+  y_lab = "Observed rate (%)"
+
   if(type == "cf") {
     model_df_selected = input %>%
       dplyr::select(!ends_with(as.character(yr_excl)) & starts_with(c("forecast", "closs_obs_cf"))) %>%
       rename_with(~ gsub("_[0-9]+$", "", .x)) %>%
       rename(observed = closs_obs_cf) %>%
-      mutate(forecast = forecast * 100, observed = observed * 100) #turn into percentage
-    x_lab = "Predicted annual counterfactual carbon loss (%)"
+      mutate(observed = observed * 100) #turn into percentage
     model = "naive"
-    lim_val = c(0, 6)
-    break_val = 0:6
-    text_x = 4.5
-    text_y = c(2, 1.5, 1)
+    title_type = "A. Counterfactual\ncarbon loss rate"
+    point_col = "darkred"
   } else if(type == "p") {
     model_df_selected = input %>%
-      dplyr::select(!ends_with(as.character(yr_excl)) & !starts_with(c("project", "closs_obs_cf", "add_rate", "add_obs"))) %>%
+      dplyr::select(!ends_with(as.character(yr_excl)) & !starts_with(c("project", "closs_obs_cf", "add_", "credit"))) %>%
       rename_with(~ gsub("_[0-9]+$", "", .x)) %>%
       rename(observed = closs_obs_p) %>%
-      mutate(forecast = scale(forecast), observed = observed * 100) #scale forecasts and turn observed into percentage
-    x_lab = "Predicted annual project carbon loss (%)"
-    lim_val = c(-1, 6)
-    break_val = seq(-1, 6)
-    text_x = 4.5
-    text_y = c(2, 1.5, 1)
-  } else if(type == "add_rate") {
+      mutate(observed = observed * 100) #scale forecasts and turn observed into percentage
+    title_type = "B. Project\ncarbon loss rate"
+    point_col = "blue"
+  } else if(type == "reduc") {
     model_df_selected = input %>%
-      dplyr::select(!ends_with(as.character(yr_excl)) & !starts_with(c("project", "closs_obs_", "add_obs"))) %>%
+      dplyr::select(!ends_with(as.character(yr_excl)) & !starts_with(c("project", "closs_obs_", "add_obs", "credit"))) %>%
       rename_with(~ gsub("_[0-9]+$", "", .x)) %>%
       rename(observed = add_rate) %>%
-      mutate(forecast = forecast * 100, observed = observed * 100) #turn into percentage
-    x_lab = "Predicted emissions reductions (%)"
-    lim_val = c(-1, 6)
-    break_val = seq(-1, 6)
-    text_x = 4.5
-    text_y = c(2, 1.5, 1)
+      mutate(observed = observed * 100) #turn into percentage
+    title_type = "C. Reduction of\ncarbon loss rate"
+    point_col = "darkgreen"
+  } else if(type == "credit") {
+    model_df_selected = input %>%
+      dplyr::select(!ends_with(as.character(yr_excl)) & !starts_with(c("project", "closs_obs_", "add_"))) %>%
+      rename_with(~ gsub("_[0-9]+$", "", .x)) %>%
+      rename(observed = credit)
+    title_type = "\nD. Carbon credit production"
+    lim_val = c(-2, 8)
+    break_val = seq(-2, 8, 2)
+    text_x = -1.5
+    text_y = c(6, 7, 8)
+    x_lab = expression(paste("Predicted credits (MgC", " ", ha^-1, " ", yr^-1, ")", sep = " "))
+    y_lab = expression(paste("Observed credits (MgC", " ", ha^-1, " ", yr^-1, ")", sep = " "))
+    point_col = "darkgoldenrod3"
   }
+
 
   #run linear model
   if(length(model) > 1) {
@@ -65,38 +79,30 @@ PlotModel = function(input, yr, type, model) {
   pred_df = data.frame(pred = predict(forecast_lm),
                        observed = forecast_lm$model$observed)
   R2 = GOF(pred_df$pred, pred_df$observed) #goodness-of-fit (R2 over 1:1 line)
-  mape = MAPE(pred_df$pred, pred_df$observed) #mean absolute percentage error (MAPE)
-  mpb = MPB(pred_df$pred, pred_df$observed) #mean percentage bias (MPB)
   mae = MAE(pred_df$pred, pred_df$observed) #mean absolute  error (MAE)
   rmse = RMSE(pred_df$pred, pred_df$observed) #root mean squared error (RMSE)
 
   #Plot model (observed vs predicted project carbon loss)
   plot_model = ggplot(data = pred_df) +
-    geom_point(aes(x = pred, y = observed), size = 3) +
+    geom_point(aes(x = pred, y = observed), size = 5, col = point_col) +
     geom_abline(intercept = 0, slope = 1, linetype = "dashed") +
-    annotate(geom = "text", x = text_x, y = text_y[1], size = 10,
-             label = paste("MAE:", round(mae, 2))) +
-    annotate(geom = "text", x = text_x, y = text_y[2], size = 10,
-             label = paste("RMSE:", round(rmse, 2))) +
-    # annotate(geom = "text", x = text_x, y = text_y[1], size = 10,
-    #          label = paste("Error:", round(mape), "%")) +
-    # annotate(geom = "text", x = text_x, y = text_y[2], size = 10,
-    #          label = paste("Bias:", round(mpb), "%")) +
-    annotate(geom = "text", x = text_x, y = text_y[3], size = 10,
-             label = paste("Goodness-of-fit:", round(R2, 3))) +
-    labs(title = figtitle,
+    annotate(geom = "text", x = text_x, y = text_y[1], size = text_size,
+             label = paste("MAE:", round(mae, 2)), hjust = 0) +
+    annotate(geom = "text", x = text_x, y = text_y[2], size = text_size,
+             label = paste("RMSE:", round(rmse, 2)), hjust = 0) +
+    annotate(geom = "text", x = text_x, y = text_y[3], size = text_size,
+             label = paste("Goodness-of-fit:", round(R2, 3)), hjust = 0) +
+    labs(title = title_type,
          x = x_lab,
-         y = "") +
+         y = y_lab) +
     scale_x_continuous(limits = lim_val, breaks = break_val) +
     scale_y_continuous(limits = lim_val, breaks = break_val) +
     theme_bw() +
     theme(panel.grid = element_blank(),
           panel.spacing = unit(0, "cm"),
-          plot.title = element_text(size = 32, hjust = 0.5),
-          axis.title.x = element_text(size = 28),
-          axis.text.x = element_text(size = 24),
-          axis.title.y = element_text(size = 28),
-          axis.text.y = element_text(size = 24),
+          plot.title = element_text(size = 38, hjust = 0.5),
+          axis.title = element_text(size = 36),
+          axis.text = element_text(size = 36),
           axis.ticks = element_blank(),
           axis.line = element_line(color = "black"))
   
