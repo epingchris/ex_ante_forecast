@@ -341,16 +341,10 @@ model_df = list(envir_var, c_init_var, forecast_obs_5_var, forecast_obs_10_var) 
          add_rate_10 = closs_obs_cf_10 - closs_obs_p_10,
          credit_5 = c_init * ((1 - closs_obs_p_5) ^ 5) - c_init * ((1 - closs_obs_cf_5) ^ 5))
 write.csv(model_df, paste0(fig_path, "model_df.csv"), row.names = F)
+model_df = read.csv(paste0(fig_path, "model_df.csv"), header = T)
 
-#scale and center all predictor columns
-var_to_scale = c("area_ha", "prj_elev", "prj_slope", "prj_remote", "gdppc_mean", "gdppc_rate", "wgicc_mean", "c_init",
-                 "forecast_5", "forecast_10")
-model_df_scaled = model_df %>%
-  mutate(across(all_of(var_to_scale), ~ as.numeric(scale(.x))))
-write.csv(model_df_scaled, paste0(fig_path, "model_df_scaled.csv"), row.names = F)
-
-model_df_scaled = read.csv(paste0(fig_path, "model_df_scaled.csv"), header = T)
-model_df_to_plot = model_df_scaled %>%
+#plot correlation matrix
+envir_var_cor = model_df %>%
   rename(Area = area_ha,
          "Mean elevation" = prj_elev,
          "Mean slope" = prj_slope,
@@ -360,93 +354,67 @@ model_df_to_plot = model_df_scaled %>%
          "Corruption index" = wgicc_mean,
          "Initial carbon density" = c_init,
          "Forecasted counterfactual loss rate" = forecast_5) %>%
-  dplyr::select(!c(project) & !ends_with(c("_5", "_10")))
-envir_var_cor = cor(model_df_to_plot)
+  dplyr::select(!c(project) & !ends_with(c("_5", "_10"))) %>%
+  cor()
 png(paste0(fig_path, "figure_s3_envir_var_corr.png"), width = 20, height = 20, unit = "cm", res = 300)
 corrplot(envir_var_cor, type = "lower", order = "hclust", addCoef.col = "black", diag = F)
 dev.off()
 
-model_df_trimmed = model_df_scaled %>%
-#  dplyr::select(!prj_elev)
-  dplyr::select(!prj_elev & !c_init)
+#remove collinear variables
 #slope and elevation highly correlated: remove elevation
 #initial carbon density and forecasted counterfactual C loss highly correlated: remove initial carbon density
+model_df_trimmed = model_df %>%
+  dplyr::select(!prj_elev & !c_init)
 
+#scale and center all predictor columns
+var_to_scale = c("area_ha", "prj_slope", "prj_remote", "gdppc_mean", "gdppc_rate", "wgicc_mean", "forecast_5", "forecast_10")
+model_df_scaled = model_df_trimmed %>%
+  mutate(across(all_of(var_to_scale), ~ as.numeric(scale(.x))))
+write.csv(model_df_scaled, paste0(fig_path, "model_df_scaled.csv"), row.names = F)
 
 # Predictive models ----
 
 #Counterfactual carbon loss: naive model (only forecast is used)
-plot_cf = PlotModel(input = model_df_trimmed, yr = 5, type = "cf")
+plot_cf = PlotModel(input = model_df_trimmed, yr = 5, type = "cf", model = "naive")
 
 #Project carbon loss: backward model selection
 plot_p = PlotModel(input = model_df_trimmed, yr = 5, type = "p", model = "sel")
 
-#Reduction of carbon loss rate: backward model selection
-plot_reduc = PlotModel(input = model_df_trimmed, yr = 5, type = "reduc", model = "sel")
-
 #Carbon credit production (emissions reductions converted into MgC ha-1 yr-1): backward model selection
 plot_credit = PlotModel(input = model_df_trimmed, yr = 5, type = "credit", model = "sel")
 
-#Uniformise predictive models by using any selected variables across models
+#Harmonise predictive models by using any selected variables across models
 retained_var = Reduce(union, list(names(plot_p$model$coefficients)[-1],
-                      names(plot_reduc$model$coefficients)[-1],
                       names(plot_credit$model$coefficients)[-1]))
 
 plot_p_uni = PlotModel(input = model_df_trimmed, yr = 5, type = "p", model = retained_var)
-plot_reduc_uni = PlotModel(input = model_df_trimmed, yr = 5, type = "reduc", model = retained_var)
 plot_credit_uni = PlotModel(input = model_df_trimmed, yr = 5, type = "credit", model = retained_var)
 
-
-model_df_trimmed = model_df_scaled %>%
-  dplyr::select(!prj_elev)
-plot_p_wocinit = PlotModel(input = model_df_trimmed, yr = 5, type = "reduc", model = aaa)
-
-
-
 #Get model diagnostics
-par(mfrow = c(2, 2))
 png(paste0(fig_path, "figure_s_diagnostic_p.png"), width = 600, height = 600)
+par(mfrow = c(2, 2))
 plot(plot_p_uni$model)
 dev.off()
 
-par(mfrow = c(2, 2))
-png(paste0(fig_path, "figure_s_diagnostic_reduc.png"), width = 600, height = 600)
-plot(plot_reduc_uni$model)
-dev.off()
-
-par(mfrow = c(2, 2))
 png(paste0(fig_path, "figure_s_diagnostic_credit.png"), width = 600, height = 600)
+par(mfrow = c(2, 2))
 plot(plot_credit_uni$model)
 dev.off()
 
 #Get model summary
 summary(plot_p_uni$model)
 eta_squared(plot_p_uni$model, partial = T)
-summary(plot_reduc_uni$model)
-eta_squared(plot_reduc_uni$model, partial = T)
 summary(plot_credit_uni$model)
 eta_squared(plot_credit_uni$model, partial = T)
 
-#Compare with naive model (only forecast is used)
-plot_p_naive = PlotModel(input = model_df_trimmed, yr = 5, type = "p", model = "naive")
-summary(plot_p_uni$model)$adj.r.squared - summary(plot_p_naive$model)$adj.r.squared
-anova(plot_p_uni$model, plot_p_naive$model)
-
-plot_reduc_naive = PlotModel(input = model_df_trimmed, yr = 5, type = "reduc", model = "naive")
-summary(plot_reduc_uni$model)$adj.r.squared - summary(plot_reduc_naive$model)$adj.r.squared
-anova(plot_reduc_uni$model, plot_reduc_naive$model)
-
-plot_credit_naive = PlotModel(input = model_df_trimmed, yr = 5, type = "credit", model = "naive")
-summary(plot_credit_uni$model)$adj.r.squared - summary(plot_credit_naive$model)$adj.r.squared
-anova(plot_credit_uni$model, plot_credit_naive$model)
-
 
 # Plot Figure 6. Forecasting vs observed for the 5-year period ----
-#Collate plots
-plot_fig6a = plot_cf$plot + plot_p_uni$plot + plot_reduc_uni$plot +
-  plot_layout(axes = "collect", axis_titles = "collect")
-plot_fig6b = plot_credit_uni$plot
-ggsave(paste0(fig_path, "figure_6a_obs_pred_5year.png"), plot = plot_fig6a, width = 65, height = 25, unit = "cm")
-ggsave(paste0(fig_path, "figure_6b_obs_pred_credit_5year.png"), plot = plot_fig6b, width = 25, height = 25, unit = "cm")
+custom_theme = theme(axis.text.x = element_text(size = 36, margin = margin(t = 10, b = 15)),
+                     plot.margin = margin(t = 20, b = 5, l = 50))
+plot_fig6a = plot_cf$plot + custom_theme
+plot_fig6b = plot_p_uni$plot + custom_theme
+plot_fig6c = plot_credit_uni$plot + custom_theme
 
-# Plot Figure 6. Forecasting vs observed for the 5-year period ----
+ggsave(paste0(fig_path, "figure_6ab_obs_pred.png"), plot = plot_fig6ab, width = 30, height = 30, unit = "cm")
+ggsave(paste0(fig_path, "figure_6b_obs_pred.png"), plot = plot_fig6b, width = 30, height = 30, unit = "cm")
+ggsave(paste0(fig_path, "figure_6c_obs_pred.png"), plot = plot_fig6c, width = 30, height = 30, unit = "cm")
