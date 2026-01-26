@@ -43,6 +43,7 @@ library(arrow) #read_parquet()
 library(MatchIt) #matchit(), used in the customised function AssessBalance()
 library(data.table) #setDT: convert setM to data table to speed up sub-sampling
 library(boot) #boot::boot
+library(httpgd)
 
 #Set optional user-selected project(s) to run
 args = commandArgs(trailingOnly = T)

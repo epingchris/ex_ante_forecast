@@ -360,11 +360,8 @@ png(paste0(fig_path, "figure_s3_envir_var_corr.png"), width = 20, height = 20, u
 corrplot(envir_var_cor, type = "lower", order = "hclust", addCoef.col = "black", diag = F)
 dev.off()
 
-#remove collinear variables
-#slope and elevation highly correlated: remove elevation
-#initial carbon density and forecasted counterfactual C loss highly correlated: remove initial carbon density
-model_df_trimmed = model_df %>%
-  dplyr::select(!prj_elev & !c_init)
+#remove the 27th project and collinear variables
+model_df_trimmed = model_df[1:26, ]
 
 #scale and center all predictor columns
 var_to_scale = c("area_ha", "prj_slope", "prj_remote", "gdppc_mean", "gdppc_rate", "wgicc_mean", "forecast_5", "forecast_10")
@@ -375,20 +372,23 @@ write.csv(model_df_scaled, paste0(fig_path, "model_df_scaled.csv"), row.names = 
 # Predictive models ----
 
 #Counterfactual carbon loss: naive model (only forecast is used)
-plot_cf = PlotModel(input = model_df_trimmed, yr = 5, type = "cf", model = "naive")
+plot_cf = PlotModel(input = model_df_trimmed, yr = 5, obs_var = "closs_obs_cf", model = "naive")
 
-#Project carbon loss: backward model selection
-plot_p = PlotModel(input = model_df_trimmed, yr = 5, type = "p", model = "sel")
+#Project carbon loss: model selection
+plot_p = PlotModel(input = model_df_trimmed, yr = 5, obs_var = "closs_obs_p", model = "sel")
 
-#Carbon credit production (emissions reductions converted into MgC ha-1 yr-1): backward model selection
-plot_credit = PlotModel(input = model_df_trimmed, yr = 5, type = "credit", model = "sel")
+#Difference in carbon loss: model selection
+plot_reduc = PlotModel(input = model_df_trimmed, yr = 5, obs_var = "add_rate", model = "forecast")
+
+#Carbon credit production (emissions reductions): model selection
+plot_credit = PlotModel(input = model_df_trimmed, yr = 5, obs_var = "credit", model = "sel")
 
 #Harmonise predictive models by using any selected variables across models
-retained_var = Reduce(union, list(names(plot_p$model$coefficients)[-1],
-                      names(plot_credit$model$coefficients)[-1]))
+retained_var = union(names(plot_p$model$coefficients)[-1],
+                     names(plot_credit$model$coefficients)[-1])
 
-plot_p_uni = PlotModel(input = model_df_trimmed, yr = 5, type = "p", model = retained_var)
-plot_credit_uni = PlotModel(input = model_df_trimmed, yr = 5, type = "credit", model = retained_var)
+plot_p_uni = PlotModel(input = model_df_trimmed, yr = 5, obs_var = "closs_obs_p", model = retained_var)
+plot_credit_uni = PlotModel(input = model_df_trimmed, yr = 5, obs_var = "credit", model = retained_var)
 
 #Get model diagnostics
 png(paste0(fig_path, "figure_s_diagnostic_p.png"), width = 600, height = 600)
@@ -409,12 +409,12 @@ eta_squared(plot_credit_uni$model, partial = T)
 
 
 # Plot Figure 6. Forecasting vs observed for the 5-year period ----
-custom_theme = theme(axis.text.x = element_text(size = 36, margin = margin(t = 10, b = 15)),
-                     plot.margin = margin(t = 20, b = 5, l = 50))
-plot_fig6a = plot_cf$plot + custom_theme
-plot_fig6b = plot_p_uni$plot + custom_theme
-plot_fig6c = plot_credit_uni$plot + custom_theme
+plot_fig6l = plot_cf$plot / plot_p$plot / plot_reduc$plot +
+  plot_layout(guide = "collect", axes = "collect", axis_titles = "collect", heights = c(1, 1, 1))
 
-ggsave(paste0(fig_path, "figure_6ab_obs_pred.png"), plot = plot_fig6ab, width = 30, height = 30, unit = "cm")
-ggsave(paste0(fig_path, "figure_6b_obs_pred.png"), plot = plot_fig6b, width = 30, height = 30, unit = "cm")
-ggsave(paste0(fig_path, "figure_6c_obs_pred.png"), plot = plot_fig6c, width = 30, height = 30, unit = "cm")
+plot_fig6r = plot_spacer() / plot_credit$plot / plot_spacer() +
+  plot_layout(heights = c(1.125, 1.1, 0.775))
+plot_fig6 = plot_fig6l | plot_fig6r +
+  plot_layout(widths = c(1, 1))
+
+ggsave(paste0(fig_path, "figure_6_obs_pred_new.png"), plot = plot_fig6, width = 60, height = 60, unit = "cm")
