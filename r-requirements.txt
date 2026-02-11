@@ -1,0 +1,13 @@
+r-tidyverse
+r-sf
+r-data.table
+r-ggplot2
+r-ggforce
+r-dplyr
+r-magrittr
+r-future
+r-future.apply
+r-boot
+r-httpgd
+r-mgcv
+r-broom
