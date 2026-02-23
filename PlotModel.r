@@ -1,16 +1,12 @@
-PlotModel = function(input, yr, obs_var, model) {
+PlotModel = function(input, obs_var, model) {
 
   #select data to use
   envir_var = c("area_ha", "prj_slope", "prj_remote", "gdppc_mean", "gdppc_rate", "wgicc_mean")
   #slope and elevation collinear: remove elevation
   #initial carbon density and forecasted counterfactual C loss collinear: remove initial carbon density
 
-  yr_excl = switch(as.character(yr),
-    "5" = "10",
-    "10" = "5")
   model_df_selected = input %>%
-    dplyr::select(!ends_with(as.character(yr_excl)) & starts_with(c(envir_var, obs_var, "forecast"))) %>%
-    rename_with(~ gsub("_[0-9]+$", "", .x)) %>%
+    dplyr::select(starts_with(c(envir_var, obs_var, "forecast"))) %>%
     rename(observed = all_of(obs_var)) %>%
     mutate(forecast = forecast * 100) #convert to percentage
   if (obs_var != "credit") {
